@@ -11,9 +11,10 @@ PY_VERSION=3.14
 echo "==> 仓库目录: $REPO_DIR  运行用户: $RUN_USER"
 
 echo "==> 系统依赖"
-export DEBIAN_FRONTEND=noninteractive
-sudo -E apt-get update -y
-sudo -E apt-get install -y nginx git curl ca-certificates build-essential openssl iptables-persistent
+echo "iptables-persistent iptables-persistent/autosave_v4 boolean true" | sudo debconf-set-selections
+echo "iptables-persistent iptables-persistent/autosave_v6 boolean true" | sudo debconf-set-selections
+sudo DEBIAN_FRONTEND=noninteractive apt-get update -y
+sudo DEBIAN_FRONTEND=noninteractive apt-get install -y nginx git curl ca-certificates build-essential openssl iptables-persistent
 sudo timedatectl set-timezone Asia/Shanghai || true
 
 MEM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
