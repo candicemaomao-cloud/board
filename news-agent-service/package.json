@@ -1,0 +1,21 @@
+{
+  "name": "news-agent-service",
+  "version": "1.0.0",
+  "description": "手写 tool-calling agent loop（不用 AgentExecutor），基于 LangChain.js + Anthropic，给美股观察系统的新闻页面做自然语言问答。",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "cli": "node cli.js"
+  },
+  "dependencies": {
+    "@langchain/anthropic": "^0.3.14",
+    "@langchain/core": "^0.3.40",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "langchain": "^0.3.15",
+    "zod": "^3.24.1"
+  }
+}
