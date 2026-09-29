@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# 在 Oracle Cloud Ubuntu 22.04/24.04（ARM 或 x86）上一键部署。
+# 在 Ubuntu 22.04/24.04 云服务器（阿里云 / Oracle 等，ARM 或 x86）上一键部署。
 # 用法：先 git clone 仓库，然后在仓库根目录运行  bash deploy/setup.sh
 set -euo pipefail
 
@@ -11,9 +11,18 @@ PY_VERSION=3.14
 echo "==> 仓库目录: $REPO_DIR  运行用户: $RUN_USER"
 
 echo "==> 系统依赖"
-sudo apt-get update -y
-sudo apt-get install -y nginx git curl ca-certificates build-essential iptables-persistent
+export DEBIAN_FRONTEND=noninteractive
+sudo -E apt-get update -y
+sudo -E apt-get install -y nginx git curl ca-certificates build-essential openssl iptables-persistent
 sudo timedatectl set-timezone Asia/Shanghai || true
+
+MEM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
+if [ "$MEM_MB" -lt 3500 ] && ! swapon --show | grep -q .; then
+  echo "==> 内存 ${MEM_MB}MB，添加 2G swap 防止编译时内存不足"
+  sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
+  sudo mkswap /swapfile && sudo swapon /swapfile
+  grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+fi
 
 if ! command -v node >/dev/null || [ "$(node -v | cut -d. -f1 | tr -d v)" -lt 20 ]; then
   echo "==> 安装 Node.js 22"
@@ -126,12 +135,12 @@ sudo ln -sf /etc/nginx/sites-available/board /etc/nginx/sites-enabled/board
 sudo rm -f /etc/nginx/sites-enabled/default
 sudo nginx -t
 
-echo "==> 放行 80/443 端口（Oracle 镜像默认 iptables 会拦）"
+echo "==> 放行 80/443 端口（部分云镜像默认 iptables 会拦）"
 for port in 80 443; do
   sudo iptables -C INPUT -p tcp --dport "$port" -j ACCEPT 2>/dev/null \
-    || sudo iptables -I INPUT 5 -p tcp --dport "$port" -m state --state NEW -j ACCEPT
+    || sudo iptables -I INPUT 1 -p tcp --dport "$port" -j ACCEPT
 done
-sudo netfilter-persistent save
+sudo netfilter-persistent save || true
 
 sudo systemctl daemon-reload
 sudo systemctl enable --now board-backend board-agent
