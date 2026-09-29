@@ -16,13 +16,20 @@ export function useChart(elRef, source, buildOption) {
   }
 
   const resize = () => chart?.resize()
+  let observer
 
   onMounted(() => {
     render()
     window.addEventListener('resize', resize)
+    if (typeof ResizeObserver !== 'undefined' && elRef.value) {
+      observer = new ResizeObserver(resize)
+      observer.observe(elRef.value)
+    }
   })
   onUnmounted(() => {
     window.removeEventListener('resize', resize)
+    observer?.disconnect()
+    observer = null
     chart?.dispose()
     chart = null
   })
