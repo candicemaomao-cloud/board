@@ -19,8 +19,8 @@ sudo timedatectl set-timezone Asia/Shanghai || true
 
 MEM_MB=$(awk '/MemTotal/ {print int($2/1024)}' /proc/meminfo)
 if [ "$MEM_MB" -lt 3500 ] && ! swapon --show | grep -q .; then
-  echo "==> 内存 ${MEM_MB}MB，添加 2G swap 防止编译时内存不足"
-  sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
+  echo "==> 内存 ${MEM_MB}MB，添加 3G swap 防止编译时内存不足"
+  sudo fallocate -l 3G /swapfile && sudo chmod 600 /swapfile
   sudo mkswap /swapfile && sudo swapon /swapfile
   grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 fi
@@ -58,7 +58,7 @@ npm ci --omit=dev || npm install --omit=dev
 echo "==> 构建前端"
 cd "$REPO_DIR/frontend"
 npm ci || npm install
-npm run build
+NODE_OPTIONS=--max-old-space-size=2048 npm run build
 sudo mkdir -p "$WEB_ROOT"
 sudo rm -rf "$WEB_ROOT"/*
 sudo cp -r dist/* "$WEB_ROOT"/

@@ -16,7 +16,7 @@ npm ci --omit=dev || npm install --omit=dev
 
 cd "$REPO_DIR/frontend"
 npm ci || npm install
-npm run build
+NODE_OPTIONS=--max-old-space-size=2048 npm run build
 sudo rm -rf /var/www/board/*
 sudo cp -r dist/* /var/www/board/
 
