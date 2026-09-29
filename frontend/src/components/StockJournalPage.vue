@@ -4,6 +4,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { api } from '../api'
 import { can } from '../auth'
 import { isoDate } from '../format'
+import { hasJournalCharts } from '../journalParse'
+import JournalChartsDialog from './JournalChartsDialog.vue'
 
 const STANCES = ['多', '空', '观望']
 
@@ -13,6 +15,14 @@ const saving = ref(false)
 const exporting = ref(false)
 const dialog = ref(false)
 const editingId = ref(null)
+const chartsOpen = ref(false)
+const chartsRow = ref(null)
+
+function openCharts(row) {
+  chartsRow.value = row
+  chartsOpen.value = true
+}
+
 const form = reactive({
   log_date: isoDate(),
   stance: '观望',
@@ -212,14 +222,17 @@ onMounted(load)
       </template>
     </el-table-column>
     <el-table-column prop="content" label="行情记录" min-width="320" show-overflow-tooltip />
-    <el-table-column label="操作" width="140" fixed="right">
+    <el-table-column label="操作" width="180" fixed="right">
       <template #default="{ row }">
+        <el-button v-if="hasJournalCharts(row.content)" link type="success" @click="openCharts(row)">图表</el-button>
         <el-button v-if="can('btn.stock_journal.write')" link type="primary" @click="openEdit(row)">改</el-button>
         <el-button v-if="can('btn.stock_journal.write')" link type="danger" @click="remove(row)">删</el-button>
       </template>
     </el-table-column>
   </el-table>
   <p class="sub" v-if="!loading && !rows.length" style="margin-top: 12px">还没有日志，点上方「写日志」。</p>
+
+  <JournalChartsDialog v-model="chartsOpen" :row="chartsRow" />
 
   <el-dialog v-model="dialog" :title="editingId ? '改日志' : '写日志'" width="560px" destroy-on-close>
     <el-form label-width="72px">
