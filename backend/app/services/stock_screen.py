@@ -17,9 +17,19 @@ EARNINGS_FIELDS = ("earnings_date", "earnings_time", "days_to_earnings")
 MAX_SCAN = 1000
 
 
+POOL_LABELS = {"spy": "SPY", "qqq": "QQQ", "dia": "DIA", "all": "全美股"}
+# 道琼斯 30 无免费成分股接口，调整成分时需手动更新
+DOW30_TICKERS = [
+    "AAPL", "AMGN", "AMZN", "AXP", "BA", "CAT", "CRM", "CSCO", "CVX", "DIS",
+    "GS", "HD", "HON", "IBM", "JNJ", "JPM", "KO", "MCD", "MMM", "MRK",
+    "MSFT", "NKE", "NVDA", "PG", "SHW", "TRV", "UNH", "V", "VZ", "WMT",
+]
+
+
 class ScreenTooLarge(ValueError):
     pass
 
+_ndx_cache: tuple[float, list[str]] | None = None
 _all_cache: tuple[float, list[dict]] | None = None
 _base_cache: tuple[float, list[dict]] | None = None
 _metric_cache: dict[str, tuple[float, dict]] = {}
@@ -96,10 +106,64 @@ def _nasdaq_all() -> list[dict]:
     return rows
 
 
+def _nasdaq100() -> list[str]:
+    global _ndx_cache
+    now = time()
+    if _ndx_cache and now - _ndx_cache[0] < BASE_TTL:
+        return _ndx_cache[1]
+    try:
+        with httpx.Client(timeout=20, headers=NASDAQ_HEADERS, follow_redirects=True) as client:
+            response = client.get("https://api.nasdaq.com/api/quote/list-type/nasdaq100")
+            response.raise_for_status()
+            raw = ((((response.json().get("data") or {}).get("data") or {}).get("rows")) or [])
+    except Exception as exc:
+        if _ndx_cache:
+            return _ndx_cache[1]
+        raise RuntimeError(f"纳斯达克100成分股获取失败：{exc}") from exc
+    symbols = [str(item.get("symbol") or "").strip().upper().replace(".", "-") for item in raw]
+    symbols = [s for s in symbols if s]
+    if not symbols:
+        raise RuntimeError("纳斯达克100成分股为空")
+    _ndx_cache = (now, symbols)
+    return symbols
+
+
+def normalize_pool(value) -> str:
+    value = str(value or "").lower()
+    if value == "sp500":
+        return "spy"
+    return value if value in POOL_LABELS else "spy"
+
+
+def _pool_symbols(pool: str) -> set[str] | None:
+    if pool == "spy":
+        return set(SP500_TICKERS)
+    if pool == "qqq":
+        return set(_nasdaq100())
+    if pool == "dia":
+        return set(DOW30_TICKERS)
+    return None
+
+
+def _pool_universe(pool: str) -> list[dict]:
+    if pool == "spy":
+        return _base_universe()
+    if pool == "all":
+        return _all_universe()
+    allowed = _pool_symbols(pool)
+    by_symbol = {row["symbol"]: row for row in _nasdaq_all()}
+    rows = [dict(by_symbol.get(s) or {"symbol": s, "name": s, "exchange": None, "sector": None,
+                                      "sector_zh": "其他", "industry": None, "ipo_year": None,
+                                      "market_cap": None, "price": None, "volume": None})
+            for s in allowed]
+    rows.sort(key=lambda row: (-(row.get("market_cap") or 0), row["symbol"]))
+    return rows
+
+
 def _earnings_universe(days: int, pool: str) -> list[dict]:
     """股票池内未来 N 天有财报的股票，基础字段来自 Nasdaq 股票列表，缺失时用财报日历自带的名称/市值。"""
     by_symbol = {row["symbol"]: row for row in _nasdaq_all()}
-    allowed = set(SP500_TICKERS) if pool == "sp500" else None
+    allowed = _pool_symbols(pool)
     rows = []
     for item in _fetch_calendar(days).get("items") or []:
         symbol = item["symbol"].replace(".", "-")
@@ -458,7 +522,7 @@ def _conditions(row, filters: dict) -> list[bool]:
 def run(config: dict) -> dict:
     filters = config.get("filters") or {}
     logic = config.get("logic") if config.get("logic") in {"all", "any"} else "all"
-    pool = "all" if config.get("universe") == "all" else "sp500"
+    pool = normalize_pool(config.get("universe"))
     try:
         earnings_days = int(filters.get("earnings_within_days") or 0)
     except (TypeError, ValueError):
@@ -467,8 +531,8 @@ def run(config: dict) -> dict:
     if earnings_days:
         base = _earnings_universe(earnings_days, pool)
     else:
-        base = _all_universe() if pool == "all" else _base_universe()
-    universe_label = "全美股" if pool == "all" else "S&P 500"
+        base = _pool_universe(pool)
+    universe_label = POOL_LABELS[pool]
     if earnings_days:
         universe_label += f" · 未来 {earnings_days} 天发布财报"
     # AND can safely narrow by base fields; OR must keep the full set for later metrics.

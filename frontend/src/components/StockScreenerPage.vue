@@ -7,7 +7,8 @@ import { can } from '../auth'
 const emit = defineEmits(['open-detail'])
 const meta = ref(null), presets = ref([]), result = ref(null), loading = ref(false), error = ref('')
 const selected = ref([]), presetName = ref(''), savingPreset = ref(false)
-const logic = ref('all'), sort = ref('market_cap'), sortDir = ref('desc'), pool = ref('sp500')
+const logic = ref('all'), sort = ref('market_cap'), sortDir = ref('desc'), pool = ref('spy')
+const POOLS = [['spy', 'SPY'], ['qqq', 'QQQ'], ['dia', 'DIA'], ['all', '全美股']]
 const sectors = ref([]), profitableOnly = ref(false), fcfPositive = ref(false), ma50 = ref('any')
 const turnedProfitable = ref(false), earningsMode = ref('include')
 const earningsOnly = ref(false), earningsDays = ref(30)
@@ -118,7 +119,7 @@ function openDetail(row) {
 }
 function loadConfig(value = {}) {
   logic.value = value.logic || 'all'; sort.value = value.sort || 'market_cap'; sortDir.value = value.sort_dir || 'desc'
-  pool.value = value.universe === 'all' ? 'all' : 'sp500'; columns.value = value.columns?.length ? [...value.columns] : columns.value
+  pool.value = POOLS.some(([key]) => key === value.universe) ? value.universe : 'spy'; columns.value = value.columns?.length ? [...value.columns] : columns.value
   const f = value.filters || {}; sectors.value = [...(f.sectors || [])]; profitableOnly.value = !!f.profitable_only
   fcfPositive.value = !!f.free_cash_flow_positive; ma50.value = f.above_ma50 === true ? 'above' : f.above_ma50 === false ? 'below' : 'any'
   turnedProfitable.value = !!f.turned_profitable; earningsMode.value = f.earnings_mode || 'include'
@@ -220,7 +221,7 @@ onActivated(() => { nextTick(() => window.scrollTo({ top: cachedScrollY.value })
 
 <template>
   <div class="stock-screen-page">
-    <p class="goal-lead">在底部选择股票池（标普 500 / 全美股），按基础信息、财务表现、估值和价格走势组合筛选；符合基础条件的股票会全部精算，不做截断。缺失数据不会按 0 处理。</p>
+    <p class="goal-lead">在底部选择股票池（SPY 标普500 / QQQ 纳斯达克100 / DIA 道琼斯30 / 全美股），按基础信息、财务表现、估值和价格走势组合筛选；符合基础条件的股票会全部精算，不做截断。缺失数据不会按 0 处理。</p>
     <section class="panel screen-filters">
       <div class="screen-head">
         <div><h2>筛选条件</h2><p class="sub">默认同时满足全部条件；较重指标只计算基础条件筛选后的候选股票。</p></div>
@@ -312,7 +313,7 @@ onActivated(() => { nextTick(() => window.scrollTo({ top: cachedScrollY.value })
         </div>
       </details>
       <div class="screen-toolbar">
-        <label>股票池<select v-model="pool"><option value="sp500">标普 500</option><option value="all">全美股</option></select></label>
+        <label>股票池<select v-model="pool"><option v-for="[key, label] in POOLS" :key="key" :value="key">{{ label }}</option></select></label>
         <label>排序<select v-model="sort"><option v-for="[key, label] in COLUMNS" :key="key" :value="key">{{ label }}</option></select></label>
         <select v-model="sortDir" aria-label="排序方向"><option value="desc">从高到低</option><option value="asc">从低到高</option></select>
         <button class="btn btn-primary" :disabled="loading || presetIncomplete" @click="run">{{ loading ? '筛选中…' : presetIncomplete ? '缺少高级条件' : '运行筛选' }}</button>
@@ -329,7 +330,7 @@ onActivated(() => { nextTick(() => window.scrollTo({ top: cachedScrollY.value })
     <p v-if="error" class="error" role="alert">{{ error }}</p>
     <section v-if="result" class="panel result-panel">
       <div class="screen-head"><div><h2>筛选结果 · {{ result.count }} 只</h2><p class="sub">{{ result.source }} · {{ result.price_period }} · 财务：{{ result.financial_period }}</p></div><div class="result-actions"><details><summary class="btn">自定义列</summary><div class="column-picker"><label v-for="[key,label] in COLUMNS" :key="key"><input v-model="columns" type="checkbox" :value="key" />{{ label }}</label></div></details><button v-if="can('btn.daily_watch.write')" class="btn" :disabled="!selected.length" @click="bulkAdd">加入股票列表（{{ selected.length }}）</button></div></div>
-      <p class="sub">股票池（{{ result.universe || 'S&P 500' }}）{{ result.universe_count }} 只 → 基础通过 {{ result.prefilter_count }} 只 → 高级通过 {{ result.advanced_pass_count ?? result.count }} 只；当前精算 {{ result.scanned_count }} 只，缺失数据 {{ result.missing_count ?? 0 }} 只。缺失值显示为“缺失”，不会按 0 参与筛选。<template v-if="result.advanced_period">高级口径：{{ result.advanced_period }}。</template></p>
+      <p class="sub">股票池（{{ result.universe || 'SPY' }}）{{ result.universe_count }} 只 → 基础通过 {{ result.prefilter_count }} 只 → 高级通过 {{ result.advanced_pass_count ?? result.count }} 只；当前精算 {{ result.scanned_count }} 只，缺失数据 {{ result.missing_count ?? 0 }} 只。缺失值显示为“缺失”，不会按 0 参与筛选。<template v-if="result.advanced_period">高级口径：{{ result.advanced_period }}。</template></p>
       <div class="table-wrap screen-table"><table><thead><tr><th><input type="checkbox" :checked="allSelected" @change="toggleAll" /></th><th>代码 / 公司</th><th v-for="key in columns" :key="key">{{ columnLabel[key] }}</th><th>详情</th></tr></thead><tbody><tr v-for="row in rows" :key="row.symbol"><td><input v-model="selected" type="checkbox" :value="row.symbol" /></td><td><b>{{ row.symbol }}</b><small>{{ row.name }}</small></td><td v-for="key in columns" :key="key" :class="[tone(row,key), { missing: row[key] == null }]">{{ display(row,key) }}</td><td class="tool-actions"><button class="detail-icon" type="button" :title="`${row.symbol} 详情`" :aria-label="`${row.symbol} 详情`" @click="openDetail(row)"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H5v18h14V8zM14 3v5h5M8 12h8M8 16h5" /></svg></button></td></tr></tbody></table></div>
       <div v-if="!rows.length" class="empty">没有股票同时满足当前条件。可以放宽范围或切换“满足任一”。</div>
     </section>

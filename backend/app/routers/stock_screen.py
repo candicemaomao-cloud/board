@@ -22,7 +22,7 @@ class ScreenBody(BaseModel):
     sort: str = "market_cap"
     sort_dir: str = "desc"
     columns: list[str] = Field(default_factory=list)
-    universe: str = "sp500"
+    universe: str = "spy"
 
 
 class PresetBody(BaseModel):
