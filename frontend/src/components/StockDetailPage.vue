@@ -92,6 +92,7 @@ const labels = { 'Total Revenue': '营业收入', 'Gross Profit': '毛利润', '
     <div class="detail-heading">
       <button class="btn" @click="back">← 返回</button>
       <div><h1>{{ stock.symbol }} <small>{{ data.financials?.company?.name || stock.sector }}</small></h1><p class="sub">现价 {{ num(data.price?.price ?? stock.current_price) }} · 列表更新 {{ time(stock.updated_at) }}</p></div>
+      <div v-if="$slots.actions" class="detail-actions"><slot name="actions" /></div>
     </div>
     <nav class="detail-nav" aria-label="股票详情章节"><a href="#stock-entry">买卖价分析</a><a v-for="[key, title] in sections" :key="key" :href="`#stock-${key}`">{{ title }}</a><a v-if="canRecordAnalysis" href="#stock-notes">我的分析记录</a></nav>
     <StockEntryAnalysis :stock="stock" :allow-record="canRecordAnalysis" @record="addAnalysisDraft" @price-saved="onEntryPriceSaved" />
@@ -225,6 +226,7 @@ const labels = { 'Total Revenue': '营业收入', 'Gross Profit': '毛利润', '
 
 .detail-heading,.section-heading,.note-actions,.notes-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .detail-heading { justify-content: flex-start; margin-bottom: 20px; }
+.detail-actions { margin-left: auto; }
 h1 { margin: 0; font-size: 28px; } h1 small { font-size: 15px; color: var(--muted); } h2 { margin: 0; font-size: 18px; }
 .detail-nav { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
 .detail-nav a { padding: 9px 14px; background: #1c293d; border-radius: 8px; }

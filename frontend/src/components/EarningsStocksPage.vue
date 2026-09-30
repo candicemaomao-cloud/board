@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import { api } from '../api'
 
+const emit = defineEmits(['open-detail'])
 const loading = ref(false)
 const enriching = ref(false)
 const adding = ref({})
@@ -176,8 +177,17 @@ onMounted(load)
           <span class="mono">{{ marketCap(row.market_cap) }}</span>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="130" fixed="right">
+      <el-table-column label="操作" width="170" fixed="right">
         <template #default="{ row }">
+          <button
+            class="detail-icon"
+            type="button"
+            :title="`${row.symbol} 详情`"
+            :aria-label="`${row.symbol} 详情`"
+            @click="emit('open-detail', row)"
+          >
+            <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H5v18h14V8zM14 3v5h5M8 12h8M8 16h5" /></svg>
+          </button>
           <el-button
             size="small"
             type="primary"
@@ -221,6 +231,20 @@ onMounted(load)
 .mono {
   font-variant-numeric: tabular-nums;
 }
+.detail-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-right: 10px;
+  padding: 2px;
+  border: 0;
+  background: transparent;
+  color: #7aa2ff;
+  cursor: pointer;
+  vertical-align: middle;
+}
+.detail-icon:hover { color: #a9c2ff; }
+.detail-icon svg { width: 16px; height: 16px; }
 .accent {
   color: #7aa2ff;
   font-weight: 600;

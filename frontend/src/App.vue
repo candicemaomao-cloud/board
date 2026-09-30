@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { ElMessage } from 'element-plus'
 import { api } from './api'
 import { authState, can, clearSession, patchCurrentUser, setSession } from './auth'
 import { isoDate, rangeDates } from './format'
@@ -159,6 +160,23 @@ const detailBackView = ref('dailyWatch')
 const stockToolSymbol = ref('')
 function openStockDetail(row, backView = 'dailyWatch') { detailStock.value = row; detailBackView.value = backView; view.value = 'stockDetail' }
 function openScreenDetail(row) { openStockDetail({ ...row, sector: row.sector_zh, current_price: row.price }, 'stockScreener') }
+function openEarningsDetail(row) { openStockDetail({ ...row, id: undefined, sector: row.sector_zh || row.sector, current_price: row.price }, 'earningsStocks') }
+const DETAIL_BACK_LABEL = { stockScreener: '股票筛选', earningsStocks: '财报股票', dailyWatch: '股票列表' }
+const addingDetail = ref(false)
+async function addDetailToList() {
+  const row = detailStock.value
+  if (!row || row.in_list || addingDetail.value) return
+  addingDetail.value = true
+  try {
+    await api.addEarningsStock(row)
+    row.in_list = true
+    ElMessage.success(`「${row.symbol}」已加入股票列表`)
+  } catch (e) {
+    ElMessage.error(e.message || '加入失败')
+  } finally {
+    addingDetail.value = false
+  }
+}
 function openStockTool(tool, symbol) {
   stockToolSymbol.value = symbol
   openParent('stockAnalysis')
@@ -230,7 +248,7 @@ const pageTitle = computed(() => {
     return sub ? `指标 · ${sub.label}` : '指标'
   }
   if (STOCK_VIEWS.has(view.value)) {
-    if (view.value === 'stockDetail') return `股票分析 · ${detailBackView.value === 'stockScreener' ? '股票筛选' : '股票列表'} · ${detailStock.value?.symbol || ''} 详情`
+    if (view.value === 'stockDetail') return `股票分析 · ${DETAIL_BACK_LABEL[detailBackView.value] || '股票列表'} · ${detailStock.value?.symbol || ''} 详情`
     if (view.value === 'dailyWatchAnalysis') return '股票分析 · 股票列表 · 分析'
     const sub = STOCK_NAV.find((x) => x.key === view.value)
     return sub ? `股票分析 · ${sub.label}` : '股票分析'
@@ -383,8 +401,8 @@ function ensureViewAllowed() {
   ) {
     view.value = 'cryptoMarket'
   }
-  const need = view.value === 'stockDetail' && detailBackView.value === 'stockScreener'
-    ? 'menu.stockScreener'
+  const need = view.value === 'stockDetail' && detailBackView.value !== 'dailyWatch'
+    ? map[detailBackView.value]
     : map[view.value]
   if (need && !can(need)) {
     if (
@@ -856,7 +874,7 @@ onUnmounted(() => {
               v-for="sub in visibleStockNav"
               :key="sub.key"
               class="side-link side-link-sub"
-              :class="{ active: view === sub.key || (sub.key === 'dailyWatch' && (view === 'dailyWatchAnalysis' || (view === 'stockDetail' && detailBackView === 'dailyWatch'))) || (sub.key === 'stockScreener' && view === 'stockDetail' && detailBackView === 'stockScreener') }"
+              :class="{ active: view === sub.key || (sub.key === 'dailyWatch' && (view === 'dailyWatchAnalysis' || (view === 'stockDetail' && detailBackView === 'dailyWatch'))) || (view === 'stockDetail' && detailBackView === sub.key) }"
               @click="openStockTab(sub.key)"
             >
               {{ sub.label }}
@@ -917,6 +935,9 @@ onUnmounted(() => {
     <KeepAlive>
       <StockScreenerPage v-if="view === 'stockScreener'" @open-detail="openScreenDetail" />
     </KeepAlive>
+    <KeepAlive>
+      <EarningsStocksPage v-if="view === 'earningsStocks'" @open-detail="openEarningsDetail" />
+    </KeepAlive>
     <UsersPage v-if="view === 'users'" />
     <PlansPage v-else-if="view === 'dayPlan'" kind="day" />
     <PlansPage v-else-if="view === 'weekPlan'" kind="week" />
@@ -969,11 +990,16 @@ onUnmounted(() => {
     <OptionsPage v-else-if="view === 'options'" :initial-symbol="stockToolSymbol" />
     <RegressionScreenerPage v-else-if="view === 'regression'" :initial-symbol="stockToolSymbol" />
     <DailyWatchPage v-else-if="view === 'dailyWatch'" @open-analysis="view = 'dailyWatchAnalysis'" @open-detail="openStockDetail" />
-    <StockDetailPage v-else-if="view === 'stockDetail' && detailStock" :stock="detailStock" @back="view = detailBackView" @more-financials="symbol => openStockTool('fundamentals', symbol)" />
+    <StockDetailPage v-else-if="view === 'stockDetail' && detailStock" :stock="detailStock" @back="view = detailBackView" @more-financials="symbol => openStockTool('fundamentals', symbol)">
+      <template v-if="detailBackView === 'earningsStocks' && can('btn.daily_watch.write')" #actions>
+        <button class="btn btn-primary" type="button" :disabled="detailStock.in_list || addingDetail" @click="addDetailToList">
+          {{ detailStock.in_list ? '已在股票列表' : addingDetail ? '加入中…' : '加入股票列表' }}
+        </button>
+      </template>
+    </StockDetailPage>
     <DailyWatchAnalysisPage v-else-if="view === 'dailyWatchAnalysis'" @back="view = 'dailyWatch'" />
     <StockJournalPage v-else-if="view === 'stockJournal'" />
     <FearVixStudyPage v-else-if="view === 'fearVix'" />
-    <EarningsStocksPage v-else-if="view === 'earningsStocks'" />
     <ArbStrategyPage v-else-if="view === 'strategy'" />
     <PairScanPage v-else-if="view === 'pairs'" />
     <IntradayScanPage v-else-if="view === 'intraday'" />
