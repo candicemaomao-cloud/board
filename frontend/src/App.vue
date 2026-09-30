@@ -168,11 +168,12 @@ async function addDetailToList() {
   if (!row || row.in_list || addingDetail.value) return
   addingDetail.value = true
   try {
-    await api.addEarningsStock(row)
+    await api.addEarningsStock({ symbol: row.symbol, name: row.name, sector_zh: row.sector_zh || row.sector, earnings_date: row.earnings_date })
     row.in_list = true
     ElMessage.success(`「${row.symbol}」已加入股票列表`)
   } catch (e) {
-    ElMessage.error(e.message || '加入失败')
+    if (/已在股票列表/.test(e.message || '')) row.in_list = true
+    ElMessage.warning(e.message || '加入失败')
   } finally {
     addingDetail.value = false
   }
@@ -992,9 +993,20 @@ onUnmounted(() => {
     <RegressionScreenerPage v-else-if="view === 'regression'" :initial-symbol="stockToolSymbol" />
     <DailyWatchPage v-else-if="view === 'dailyWatch'" @open-analysis="view = 'dailyWatchAnalysis'" @open-detail="openStockDetail" />
     <StockDetailPage v-else-if="view === 'stockDetail' && detailStock" :stock="detailStock" @back="view = detailBackView" @more-financials="symbol => openStockTool('fundamentals', symbol)">
-      <template v-if="detailBackView === 'earningsStocks' && can('btn.daily_watch.write')" #actions>
-        <button class="btn btn-primary" type="button" :disabled="detailStock.in_list || addingDetail" @click="addDetailToList">
-          {{ detailStock.in_list ? '已在股票列表' : addingDetail ? '加入中…' : '加入股票列表' }}
+      <template v-if="['earningsStocks', 'stockScreener'].includes(detailBackView) && can('btn.daily_watch.write')" #actions>
+        <button
+          class="btn icon-btn"
+          :class="{ added: detailStock.in_list }"
+          type="button"
+          :disabled="detailStock.in_list || addingDetail"
+          :title="detailStock.in_list ? '已在股票列表' : '加入股票列表'"
+          aria-label="加入股票列表"
+          @click="addDetailToList"
+        >
+          <svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+            <path v-if="detailStock.in_list" d="M5 12l5 5L20 7" />
+            <path v-else d="M4 6h11M4 12h11M4 18h7M18 15v6M15 18h6" />
+          </svg>
         </button>
       </template>
     </StockDetailPage>

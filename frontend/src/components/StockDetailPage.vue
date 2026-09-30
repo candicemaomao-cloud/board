@@ -8,13 +8,15 @@ import StockEntryAnalysis from './StockEntryAnalysis.vue'
 const props = defineProps({ stock: { type: Object, required: true } })
 const emit = defineEmits(['back', 'more-financials'])
 const sections = [
-  ['financials', '财务摘要'], ['price', '价格走势'], ['options', '期权'],
+  ['financials', '财务摘要'], ['ratings', '机构评级'], ['price', '价格走势'], ['options', '期权'],
   ['regression', '回归线'], ['news', '近期新闻'], ['events', '下一事件'],
 ]
 const data = reactive({}), loading = reactive({}), errors = reactive({})
 const notes = ref([]), draft = ref(''), saving = ref(false), noteError = ref(''), saved = ref(false)
 const period = ref(126)
+const ratingsExpanded = ref(false)
 const canRecordAnalysis = computed(() => Number.isInteger(Number(props.stock.id)) && Number(props.stock.id) > 0)
+const visibleSections = computed(() => sections.filter(([key]) => key !== 'ratings' || data.ratings?.available))
 let generation = 0
 function num(v) { return v == null || !Number.isFinite(Number(v)) ? '—' : Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 2 }) }
 function time(v) { return v ? new Date(v).toLocaleString('zh-CN') : '—' }
@@ -35,7 +37,7 @@ async function load(section) {
 watch(() => [props.stock.id, props.stock.symbol], () => {
   generation++
   Object.keys(data).forEach(k => delete data[k])
-  notes.value = []; draft.value = ''; saved.value = false
+  notes.value = []; draft.value = ''; saved.value = false; ratingsExpanded.value = false
   sections.forEach(([key]) => load(key))
   if (canRecordAnalysis.value) load('notes')
 }, { immediate: true })
@@ -77,6 +79,10 @@ const financial = computed(() => data.financials?.quarter)
 const company = computed(() => data.financials?.company || {})
 const valuation = computed(() => company.value.valuation || {})
 const financialNotes = computed(() => data.financials?.notes || [])
+const ratingRows = computed(() => {
+  const rows = data.ratings?.items || []
+  return [...rows].sort((a, b) => Number(b.is_featured) - Number(a.is_featured) || Number(b.is_major) - Number(a.is_major) || String(b.date).localeCompare(String(a.date)))
+})
 function usd(value, compact = false) {
   if (value == null || value === '' || !Number.isFinite(Number(value))) return '—'
   const n = Number(value), abs = Math.abs(n), sign = n < 0 ? '-' : ''
@@ -94,11 +100,12 @@ const labels = { 'Total Revenue': '营业收入', 'Gross Profit': '毛利润', '
       <div><h1>{{ stock.symbol }} <small>{{ data.financials?.company?.name || stock.sector }}</small></h1><p class="sub">现价 {{ num(data.price?.price ?? stock.current_price) }} · 列表更新 {{ time(stock.updated_at) }}</p></div>
       <div v-if="$slots.actions" class="detail-actions"><slot name="actions" /></div>
     </div>
-    <nav class="detail-nav" aria-label="股票详情章节"><a href="#stock-entry">买卖价分析</a><a v-for="[key, title] in sections" :key="key" :href="`#stock-${key}`">{{ title }}</a><a v-if="canRecordAnalysis" href="#stock-notes">我的分析记录</a></nav>
+    <nav class="detail-nav" aria-label="股票详情章节"><a href="#stock-entry">买卖价分析</a><a v-for="[key, title] in visibleSections" :key="key" :href="`#stock-${key}`">{{ title }}</a><a v-if="canRecordAnalysis" href="#stock-notes">我的分析记录</a></nav>
     <StockEntryAnalysis :stock="stock" :allow-record="canRecordAnalysis" @record="addAnalysisDraft" @price-saved="onEntryPriceSaved" />
     <div class="detail-grid">
-      <section v-for="[key, title] in sections" :id="`stock-${key}`" :key="key" class="panel" :class="{ wide: ['financials', 'price', 'options', 'regression'].includes(key) }">
-        <div class="section-heading"><h2>{{ title }}</h2><button class="btn btn-ghost" :disabled="loading[key]" @click="load(key)">{{ loading[key] ? '加载中…' : '刷新' }}</button></div>
+      <section v-for="[key, title] in visibleSections" :id="`stock-${key}`" :key="key" class="panel" :class="{ wide: ['financials', 'ratings', 'price', 'options', 'regression'].includes(key) }">
+        <div class="section-heading"><h2>{{ title }}</h2><div class="section-actions"><button class="btn btn-ghost" :disabled="loading[key]" @click="load(key)">{{ loading[key] ? '加载中…' : '刷新' }}</button><button v-if="key === 'ratings'" class="collapse-icon" type="button" :aria-label="ratingsExpanded ? '收起机构评级' : '展开机构评级'" :title="ratingsExpanded ? '收起' : '展开'" :aria-expanded="ratingsExpanded" @click="ratingsExpanded = !ratingsExpanded"><svg viewBox="0 0 20 20" aria-hidden="true" :class="{ expanded: ratingsExpanded }"><path d="m5 7.5 5 5 5-5" /></svg></button></div></div>
+        <template v-if="key !== 'ratings' || ratingsExpanded">
         <p v-if="errors[key]" class="error" role="alert">{{ errors[key] }}，可点击刷新重试。</p>
         <p v-else-if="loading[key] && !data[key]" class="sub">正在加载 {{ stock.symbol }} 数据…</p>
         <template v-if="data[key]">
@@ -136,6 +143,46 @@ const labels = { 'Total Revenue': '营业收入', 'Gross Profit': '毛利润', '
             <p v-else class="sub">暂无季度财务数据。</p>
             <div class="more-row"><button class="btn" type="button" @click="emit('more-financials', stock.symbol)">更多财报分析 →</button></div>
           </template>
+          <template v-else-if="key === 'ratings'">
+            <div class="ratings-overview">
+              <div v-if="data.ratings.summary" class="rating-consensus" :class="data.ratings.summary.tone">
+                <span>近月综合意见</span><strong>{{ data.ratings.summary.label }}</strong>
+                <small>{{ data.ratings.summary.total }} 位分析师 · 评分 {{ data.ratings.summary.average_score }}</small>
+              </div>
+              <div v-if="data.ratings.summary" class="rating-counts">
+                <div><span>强力买入</span><b>{{ data.ratings.summary.counts.strongBuy }}</b></div>
+                <div><span>买入</span><b>{{ data.ratings.summary.counts.buy }}</b></div>
+                <div><span>观望</span><b>{{ data.ratings.summary.counts.hold }}</b></div>
+                <div><span>卖出</span><b>{{ data.ratings.summary.counts.sell + data.ratings.summary.counts.strongSell }}</b></div>
+              </div>
+            </div>
+            <div v-if="Object.values(data.ratings.targets || {}).some(v => v != null)" class="price-grid rating-targets">
+              <div class="price-card"><span>当前价格</span><b>{{ usd(data.ratings.targets.current) }}</b></div>
+              <div class="price-card"><span>平均目标价</span><b>{{ usd(data.ratings.targets.mean) }}</b></div>
+              <div class="price-card"><span>目标价中位数</span><b>{{ usd(data.ratings.targets.median) }}</b></div>
+              <div class="price-card"><span>目标价区间</span><b>{{ usd(data.ratings.targets.low) }} — {{ usd(data.ratings.targets.high) }}</b></div>
+            </div>
+            <div v-if="data.ratings.action_summary?.total" class="rating-actions-summary">
+              <div class="upgrade"><span>上调</span><b>{{ data.ratings.action_summary.upgrade }}</b></div>
+              <div class="downgrade"><span>下调</span><b>{{ data.ratings.action_summary.downgrade }}</b></div>
+              <div><span>维持</span><b>{{ data.ratings.action_summary.maintain }}</b></div>
+              <div><span>首次覆盖</span><b>{{ data.ratings.action_summary.initiated }}</b></div>
+              <div v-if="data.ratings.action_summary.other"><span>其他</span><b>{{ data.ratings.action_summary.other }}</b></div>
+            </div>
+            <div v-if="ratingRows.length" class="ratings-table-wrap">
+              <table class="ratings-table">
+                <thead><tr><th>机构</th><th>最新评级</th><th>动作</th><th>目标价</th><th>日期</th></tr></thead>
+                <tbody><tr v-for="item in ratingRows" :key="`${item.firm}-${item.date}`" :class="{ featured: item.is_featured }">
+                  <td><strong>{{ item.firm }}</strong><span v-if="item.is_featured" class="firm-badge">重点机构</span><span v-else-if="item.is_major" class="firm-badge muted">大型机构</span></td>
+                  <td><span class="rating-pill" :class="item.tone">{{ item.rating_label }}</span><small>{{ item.rating }}</small></td>
+                  <td>{{ item.action || '—' }}</td>
+                  <td>{{ usd(item.current_target) }}<small v-if="item.prior_target != null">此前 {{ usd(item.prior_target) }}</small></td>
+                  <td>{{ item.date || '—' }}</td>
+                </tr></tbody>
+              </table>
+            </div>
+            <p class="sub rating-source">{{ data.ratings.source }} · 更新 {{ time(data.ratings.fetched_at) }}</p>
+          </template>
           <template v-else-if="key === 'price'">
             <div class="section-heading"><span class="sub">日线收盘价 · {{ data.price.source }} · 截至 {{ bars.at(-1) ? new Date(bars.at(-1).ts * 1000).toISOString().slice(0, 10) : '—' }}</span><select v-model="period" aria-label="价格走势范围"><option :value="21">近一个月</option><option :value="63">近三个月</option><option :value="126">近六个月</option><option :value="252">近一年</option></select></div>
             <MacroChart v-if="bars.length" :option="priceChart" height="320px" /><p v-else class="sub">暂无价格走势。</p>
@@ -158,6 +205,7 @@ const labels = { 'Total Revenue': '营业收入', 'Gross Profit': '毛利润', '
           </template>
         </template>
         <template v-if="key === 'events' && stock.events"><h3>列表中的事件备注</h3><p class="preserve">{{ stock.events }}</p></template>
+        </template>
       </section>
       <section v-if="canRecordAnalysis" id="stock-notes" class="panel wide">
         <div class="notes-heading">
@@ -223,10 +271,20 @@ const labels = { 'Total Revenue': '营业收入', 'Gross Profit': '毛利润', '
 .financial-notes { grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); }
 .financial-notes p { line-height: 1.65; }
 .more-row { display:flex;justify-content:flex-end;margin-top:18px; }
+.section-actions { display: flex; align-items: center; gap: 9px; }.collapse-icon { display: inline-grid; width: 38px; height: 38px; padding: 0; place-items: center; border: 1px solid #334258; border-radius: 9px; color: #a9b8cc; background: #111b28; cursor: pointer; transition: border-color .16s ease, color .16s ease, background .16s ease; }.collapse-icon:hover { border-color: #6480aa; color: #d7e2f2; background: #172437; }.collapse-icon:focus-visible { outline: 2px solid #82a5ff; outline-offset: 2px; }.collapse-icon svg { width: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; transition: transform .18s ease; }.collapse-icon svg.expanded { transform: rotate(180deg); }
+.ratings-overview { display: grid; grid-template-columns: minmax(210px, .7fr) minmax(0, 1.6fr); gap: 16px; margin-top: 18px; }
+.rating-consensus { display: grid; gap: 7px; padding: 18px; border: 1px solid #334157; border-radius: 12px; background: #101925; }.rating-consensus span,.rating-consensus small { color: var(--muted); }.rating-consensus strong { font-size: 27px; }.rating-consensus.buy { border-color: rgba(62,207,142,.45); }.rating-consensus.buy strong { color: #57d7a5; }.rating-consensus.sell { border-color: rgba(239,115,143,.45); }.rating-consensus.sell strong { color: #f18ba4; }
+.rating-counts { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; }.rating-counts div { display: grid; place-content: center; gap: 7px; min-height: 92px; padding: 12px; border: 1px solid #29384b; border-radius: 12px; background: #0e1722; text-align: center; }.rating-counts span { color: var(--muted); font-size: 12px; }.rating-counts b { font-size: 22px; }
+.rating-actions-summary { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; }.rating-actions-summary div { display: flex; align-items: baseline; gap: 12px; min-width: 112px; padding: 11px 14px; border: 1px solid #2b394c; border-radius: 10px; background: #0e1722; }.rating-actions-summary span { color: var(--muted); font-size: 12px; }.rating-actions-summary b { margin-left: auto; font-size: 18px; }.rating-actions-summary .upgrade b { color: #57d7a5; }.rating-actions-summary .downgrade b { color: #f18ba4; }
+.rating-targets { margin-top: 16px; grid-template-columns: repeat(4,minmax(0,1fr)); }.ratings-table-wrap { overflow-x: auto; margin-top: 18px; border: 1px solid #29384b; border-radius: 12px; }.ratings-table { width: 100%; border-collapse: collapse; min-width: 720px; }.ratings-table th,.ratings-table td { padding: 13px 15px; border-bottom: 1px solid #263447; text-align: left; vertical-align: middle; }.ratings-table th { color: var(--muted); font-size: 12px; font-weight: 600; background: #101a27; }.ratings-table tbody tr:last-child td { border-bottom: 0; }.ratings-table tr.featured { background: rgba(130,165,255,.07); }.ratings-table td small { display: block; margin-top: 5px; color: var(--muted); }.firm-badge { display: inline-flex; margin-left: 8px; padding: 3px 7px; border-radius: 10px; color: #a9c1ff; background: rgba(130,165,255,.14); font-size: 10px; font-weight: 500; }.firm-badge.muted { color: #9fb0c7; background: rgba(159,176,199,.1); }.rating-pill { display: inline-flex; padding: 5px 9px; border-radius: 16px; color: #b7c5d7; background: #263447; font-size: 12px; }.rating-pill.buy { color: #62dbae; background: rgba(62,207,142,.13); }.rating-pill.sell { color: #f195aa; background: rgba(239,115,143,.13); }.rating-source { margin-bottom: 0; }
 
 .detail-heading,.section-heading,.note-actions,.notes-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .detail-heading { justify-content: flex-start; margin-bottom: 20px; }
 .detail-actions { margin-left: auto; }
+.detail-actions :slotted(.icon-btn) { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; padding: 0; border: 1px solid #2c3a4d; border-radius: 8px; background: #0d1620; color: #b9c8ff; cursor: pointer; }
+.detail-actions :slotted(.icon-btn:hover:not(:disabled)) { border-color: #82a5ff; color: #dce6ff; }
+.detail-actions :slotted(.icon-btn svg) { width: 18px; height: 18px; }
+.detail-actions :slotted(.icon-btn.added) { color: #5dd39e; cursor: default; }
 h1 { margin: 0; font-size: 28px; } h1 small { font-size: 15px; color: var(--muted); } h2 { margin: 0; font-size: 18px; }
 .detail-nav { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 20px; }
 .detail-nav a { padding: 9px 14px; background: #1c293d; border-radius: 8px; }
@@ -245,5 +303,6 @@ a { color: #91b1ff; text-decoration: none; } a:hover { text-decoration: underlin
 .notes-list { display: grid; gap: 12px; margin-top: 12px; }.note-card { padding: 16px 18px; border: 1px solid rgba(148,176,210,.13); border-radius: 12px; background: rgba(8,15,23,.35); }.note-card time { display: flex; align-items: center; gap: 7px; color: #788aa3; font-size: 11px; }.note-card time svg { width: 14px; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }.note-card p { margin: 12px 0 0; color: #dbe4ef; }
 .notes-empty { display: grid; justify-items: center; gap: 6px; margin-top: 22px; padding: 34px 20px; border: 1px dashed rgba(148,176,210,.18); border-radius: 12px; color: var(--muted); text-align: center; }.notes-empty svg { width: 30px; fill: none; stroke: #61748f; stroke-width: 1.4; stroke-linecap: round; stroke-linejoin: round; }.notes-empty p { margin: 5px 0 0; color: #b7c4d6; font-size: 14px; }.notes-empty span { font-size: 12px; }
 @media(max-width: 850px) { .detail-grid { grid-template-columns: 1fr; }.detail-heading { align-items: flex-start; flex-direction: column; } }
+@media(max-width: 700px) { .ratings-overview { grid-template-columns: 1fr; }.rating-counts,.rating-targets { grid-template-columns: repeat(2,minmax(0,1fr)); } }
 @media(max-width: 600px) { .notes-heading { flex-direction: column; }.note-editor-footer { align-items: flex-end; }.note-hint { max-width: 70%; }.note-actions { align-items: stretch; flex-direction: column; }.note-save { width: 100%; } }
 </style>
