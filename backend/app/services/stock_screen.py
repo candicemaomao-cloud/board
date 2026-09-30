@@ -17,7 +17,7 @@ EARNINGS_FIELDS = ("earnings_date", "earnings_time", "days_to_earnings")
 MAX_SCAN = 1000
 
 
-POOL_LABELS = {"spy": "SPY", "qqq": "QQQ", "dia": "DIA", "all": "全美股"}
+POOL_LABELS = {"spy": "SPY", "qqq": "QQQ", "dia": "DIA", "all": "全部"}
 # 道琼斯 30 无免费成分股接口，调整成分时需手动更新
 DOW30_TICKERS = [
     "AAPL", "AMGN", "AMZN", "AXP", "BA", "CAT", "CRM", "CSCO", "CVX", "DIS",

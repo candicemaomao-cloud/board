@@ -8,7 +8,7 @@ const emit = defineEmits(['open-detail'])
 const meta = ref(null), presets = ref([]), result = ref(null), loading = ref(false), error = ref('')
 const selected = ref([]), presetName = ref(''), savingPreset = ref(false)
 const logic = ref('all'), sort = ref('market_cap'), sortDir = ref('desc'), pool = ref('spy')
-const POOLS = [['spy', 'SPY'], ['qqq', 'QQQ'], ['dia', 'DIA'], ['all', '全美股']]
+const POOLS = [['spy', 'SPY'], ['qqq', 'QQQ'], ['dia', 'DIA'], ['all', '全部']]
 const sectors = ref([]), profitableOnly = ref(false), fcfPositive = ref(false), ma50 = ref('any')
 const turnedProfitable = ref(false), earningsMode = ref('include')
 const earningsOnly = ref(false), earningsDays = ref(30)
@@ -81,7 +81,7 @@ const builtinPresets = [
     config: { logic: 'all', sort: 'regression_deviation', sort_dir: 'asc', filters: { ranges: { market_cap: { min: 1e10 }, avg_dollar_volume_20d: { min: 2e7 }, regression_deviation: { min: -2.5, max: -1 } }, profitable_only: true, free_cash_flow_positive: true, advanced_enabled: true } },
   },
   {
-    id: 'builtin-earnings', name: '财报研究名单', purpose: '提前整理未来两周发布财报的公司（全美股）', required: '行情、财报日历',
+    id: 'builtin-earnings', name: '财报研究名单', purpose: '提前整理未来两周发布财报的公司（全部）', required: '行情、财报日历',
     config: { logic: 'all', sort: 'days_to_earnings', sort_dir: 'asc', universe: 'all', filters: { ranges: { market_cap: { min: 1e10 }, avg_dollar_volume_20d: { min: 2e7 } }, earnings_within_days: 14 } },
   },
 ]
@@ -221,7 +221,7 @@ onActivated(() => { nextTick(() => window.scrollTo({ top: cachedScrollY.value })
 
 <template>
   <div class="stock-screen-page">
-    <p class="goal-lead">在底部选择股票池（SPY 标普500 / QQQ 纳斯达克100 / DIA 道琼斯30 / 全美股），按基础信息、财务表现、估值和价格走势组合筛选；符合基础条件的股票会全部精算，不做截断。缺失数据不会按 0 处理。</p>
+    <p class="goal-lead">在底部选择股票池（SPY 标普500 / QQQ 纳斯达克100 / DIA 道琼斯30 / 全部），按基础信息、财务表现、估值和价格走势组合筛选；符合基础条件的股票会全部精算，不做截断。缺失数据不会按 0 处理。</p>
     <section class="panel screen-filters">
       <div class="screen-head">
         <div><h2>筛选条件</h2><p class="sub">默认同时满足全部条件；较重指标只计算基础条件筛选后的候选股票。</p></div>
