@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from time import time
 from urllib.parse import quote
 
@@ -351,6 +352,17 @@ def _yahoo_ttm(code: str) -> dict:
         stats = payload.get('defaultKeyStatistics') or {}
         def raw(value):
             return _num(value.get('raw')) if isinstance(value, dict) else _num(value)
+        def percent(value):
+            number = raw(value)
+            return number * 100 if number is not None else None
+        def date(value):
+            timestamp = raw(value)
+            if timestamp is None:
+                return None
+            try:
+                return datetime.fromtimestamp(timestamp, timezone.utc).date().isoformat()
+            except (ValueError, OverflowError, OSError):
+                return None
         trailing_pe = raw(detail.get('trailingPE'))
         if trailing_pe is not None and trailing_pe <= 0:
             trailing_pe = None
@@ -362,6 +374,11 @@ def _yahoo_ttm(code: str) -> dict:
             'free_cash_flow_ttm': raw(financial.get('freeCashflow')),
             'net_margin_ttm': (raw(financial.get('profitMargins')) * 100
                                if raw(financial.get('profitMargins')) is not None else None),
+            'annual_dividend_rate': raw(detail.get('dividendRate')) or raw(detail.get('trailingAnnualDividendRate')),
+            'dividend_yield': percent(detail.get('dividendYield')),
+            'payout_ratio': percent(detail.get('payoutRatio')),
+            'ex_dividend_date': date(detail.get('exDividendDate')),
+            'five_year_avg_dividend_yield': raw(detail.get('fiveYearAvgDividendYield')),
             'as_of': 'Yahoo Finance · TTM/当前估值',
         }
     except Exception:

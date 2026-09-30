@@ -124,6 +124,11 @@ const labels = { 'Total Revenue': '营业收入', 'Gross Profit': '毛利润', '
                 <div class="price-card"><span>营收（TTM）</span><b>{{ usd(valuation.revenue_ttm, true) }}</b></div>
                 <div class="price-card"><span>自由现金流（TTM）</span><b>{{ usd(valuation.free_cash_flow_ttm, true) }}</b></div>
                 <div class="price-card"><span>净利率（TTM）</span><b>{{ valuation.net_margin_ttm == null ? '—' : `${num(valuation.net_margin_ttm)}%` }}</b></div>
+                <div class="price-card"><span>年度股息 / 股</span><b>{{ usd(valuation.annual_dividend_rate) }}</b></div>
+                <div class="price-card"><span>股息率</span><b>{{ valuation.dividend_yield == null ? '—' : `${num(valuation.dividend_yield)}%` }}</b></div>
+                <div class="price-card"><span>派息率</span><b>{{ valuation.payout_ratio == null ? '—' : `${num(valuation.payout_ratio)}%` }}</b></div>
+                <div class="price-card"><span>除息日</span><b>{{ valuation.ex_dividend_date || '—' }}</b></div>
+                <div v-if="valuation.five_year_avg_dividend_yield != null" class="price-card"><span>5 年平均股息率</span><b>{{ num(valuation.five_year_avg_dividend_yield) }}%</b></div>
               </div>
               <p class="sub">{{ valuation.as_of || 'TTM 数据暂不可用' }}</p>
               <p class="company-about">{{ company.about || '暂无公司简介。' }}</p>

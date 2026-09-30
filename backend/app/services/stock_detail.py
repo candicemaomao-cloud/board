@@ -1,7 +1,162 @@
 """Per-symbol supplementary data. Failures are surfaced by each section independently."""
 from datetime import datetime, timezone
+import math
+import time
 import httpx
 from app.services.quotes import HEADERS
+
+
+_ratings_cache = {}
+_RATINGS_TTL_SECONDS = 60 * 60
+
+
+def _clean_number(value):
+    try:
+        number = float(value)
+        return number if math.isfinite(number) else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _rating_label(value):
+    original = str(value or '').strip()
+    key = original.casefold().replace('-', ' ').replace('_', ' ')
+    buy = ('strong buy', 'buy', 'outperform', 'overweight', 'positive', 'accumulate', 'add')
+    sell = ('strong sell', 'sell', 'underperform', 'underweight', 'negative', 'reduce')
+    hold = ('hold', 'neutral', 'equal weight', 'market perform', 'sector perform',
+            'peer perform', 'in line', 'mixed')
+    if any(term in key for term in buy):
+        return '买入 / 看多', 'buy'
+    if any(term in key for term in sell):
+        return '卖出 / 看空', 'sell'
+    if any(term in key for term in hold):
+        return '观望 / 中性', 'hold'
+    return original or '未分类', 'other'
+
+
+def _rating_action(value, target_action=None):
+    key = str(value or '').casefold()
+    target = str(target_action or '').casefold()
+    if key in ('up', 'upgrade') or 'raise' in target:
+        return '上调'
+    if key in ('down', 'downgrade') or 'lower' in target:
+        return '下调'
+    if key in ('init', 'initiated') or 'initiat' in target:
+        return '首次覆盖'
+    if key in ('main', 'reit', 'reiterate') or 'maintain' in target:
+        return '维持'
+    return str(value or target_action or '').strip()
+
+
+def _is_major_firm(firm):
+    key = str(firm or '').casefold()
+    names = ('jpmorgan', 'jp morgan', 'morgan stanley', 'goldman sachs', 'b of a',
+             'bank of america', 'citigroup', 'citi', 'ubs', 'barclays', 'wells fargo',
+             'deutsche bank', 'hsbc', 'jefferies', 'evercore', 'bernstein', 'mizuho', 'td cowen')
+    return any(name in key for name in names)
+
+
+def _frame_records(frame):
+    if frame is None or getattr(frame, 'empty', True):
+        return []
+    data = frame.reset_index()
+    return data.to_dict(orient='records')
+
+
+def _recommendation_summary(frame):
+    records = _frame_records(frame)
+    if not records:
+        return None
+    row = next((item for item in records if str(item.get('period', '')).casefold() == '0m'), records[0])
+    counts = {key: int(_clean_number(row.get(key)) or 0) for key in
+              ('strongBuy', 'buy', 'hold', 'sell', 'strongSell')}
+    total = sum(counts.values())
+    if not total:
+        return None
+    average = (counts['strongBuy'] + counts['buy'] * 2 + counts['hold'] * 3 +
+               counts['sell'] * 4 + counts['strongSell'] * 5) / total
+    if average <= 1.5:
+        label, tone = '强力买入', 'buy'
+    elif average <= 2.5:
+        label, tone = '买入', 'buy'
+    elif average <= 3.5:
+        label, tone = '观望', 'hold'
+    elif average <= 4.5:
+        label, tone = '卖出', 'sell'
+    else:
+        label, tone = '强力卖出', 'sell'
+    return {'period': row.get('period'), 'counts': counts, 'total': total,
+            'label': label, 'tone': tone, 'average_score': round(average, 2)}
+
+
+def ratings(symbol: str) -> dict:
+    """Return recent institution ratings. Empty/failed sources intentionally produce available=false."""
+    symbol = symbol.strip().upper()
+    cached = _ratings_cache.get(symbol)
+    if cached and time.monotonic() - cached[0] < _RATINGS_TTL_SECONDS:
+        return cached[1]
+
+    import yfinance as yf
+    ticker = yf.Ticker(symbol)
+    upgrades = summary_frame = None
+    targets = {}
+    try:
+        upgrades = ticker.get_upgrades_downgrades()
+    except Exception:
+        pass
+    try:
+        summary_frame = ticker.get_recommendations_summary()
+    except Exception:
+        pass
+    try:
+        targets = ticker.get_analyst_price_targets() or {}
+    except Exception:
+        pass
+
+    rows = _frame_records(upgrades)
+    rows.sort(key=lambda item: str(item.get('GradeDate') or item.get('index') or ''), reverse=True)
+    items, seen = [], set()
+    for row in rows:
+        firm = str(row.get('Firm') or '').strip()
+        grade = str(row.get('ToGrade') or '').strip()
+        if not firm or not grade or firm.casefold() in seen:
+            continue
+        seen.add(firm.casefold())
+        date_value = row.get('GradeDate') or row.get('index')
+        if hasattr(date_value, 'isoformat'):
+            date_value = date_value.isoformat()
+        label, tone = _rating_label(grade)
+        firm_key = firm.casefold().replace('.', '').replace(' ', '')
+        items.append({
+            'date': str(date_value or '')[:10], 'firm': firm, 'rating': grade,
+            'rating_label': label, 'tone': tone, 'from_rating': str(row.get('FromGrade') or '').strip(),
+            'action': _rating_action(row.get('Action'), row.get('priceTargetAction')),
+            'current_target': _clean_number(row.get('currentPriceTarget')),
+            'prior_target': _clean_number(row.get('priorPriceTarget')),
+            'is_major': _is_major_firm(firm),
+            'is_featured': firm_key in ('jpmorgan', 'jpmorgansecurities'),
+        })
+        if len(items) >= 30:
+            break
+
+    target_data = {key: _clean_number(targets.get(key)) for key in
+                   ('current', 'low', 'high', 'mean', 'median')}
+    summary = _recommendation_summary(summary_frame)
+    action_summary = {'upgrade': 0, 'downgrade': 0, 'maintain': 0, 'initiated': 0, 'other': 0}
+    action_keys = {'上调': 'upgrade', '下调': 'downgrade', '维持': 'maintain', '首次覆盖': 'initiated'}
+    for item in items:
+        action_summary[action_keys.get(item['action'], 'other')] += 1
+    action_summary['total'] = len(items)
+    available = bool(items or summary or any(value is not None for value in target_data.values()))
+    result = {
+        'available': available, 'items': items,
+        'major_items': [item for item in items if item['is_major']],
+        'summary': summary, 'action_summary': action_summary, 'targets': target_data,
+        'source': 'Yahoo Finance · 机构评级可能延迟，请以机构最新报告为准',
+        'fetched_at': datetime.now(timezone.utc).isoformat(),
+    }
+    _ratings_cache[symbol] = (time.monotonic(), result)
+    return result
 
 
 def _news_date(value):

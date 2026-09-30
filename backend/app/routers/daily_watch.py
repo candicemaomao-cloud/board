@@ -153,7 +153,7 @@ def _detail_for_symbol(symbol: str, section: str):
 
 
 @router.get('/{watch_id}/detail/{section}')
-def read_detail(watch_id: int, section: Literal['financials', 'price', 'options', 'regression', 'news', 'events'],
+def read_detail(watch_id: int, section: Literal['financials', 'price', 'options', 'regression', 'ratings', 'news', 'events'],
                 db: Session = Depends(get_db), user: User = Depends(require_user)):
     row = detail_watch(db, watch_id, user)
     try:
@@ -165,7 +165,7 @@ def read_detail(watch_id: int, section: Literal['financials', 'price', 'options'
 
 
 @router.get('/symbol/{symbol}/detail/{section}')
-def read_symbol_detail(symbol: str, section: Literal['financials', 'price', 'options', 'regression', 'news', 'events'],
+def read_symbol_detail(symbol: str, section: Literal['financials', 'price', 'options', 'regression', 'ratings', 'news', 'events'],
                        user: User = Depends(require_user)):
     code = detail_symbol(symbol, user)
     try:

@@ -55,9 +55,24 @@ const COLUMNS = [
   ['earnings_date', '财报日'],
 ]
 const columns = ref(['price', 'market_cap', 'sector_zh', 'avg_dollar_volume_20d', 'revenue_growth_yoy', 'net_margin', 'free_cash_flow_positive', 'pe', 'weekly_return', 'monthly_return', 'above_ma50', 'regression_deviation'])
-const rows = computed(() => result.value?.items || [])
-const allSelected = computed(() => rows.value.length > 0 && selected.value.length === rows.value.length)
+const industryQuery = ref('')
+const allRows = computed(() => result.value?.items || [])
+const rows = computed(() => industryQuery.value
+  ? allRows.value.filter(row => row.sector_zh === industryQuery.value)
+  : allRows.value)
 const columnLabel = Object.fromEntries(COLUMNS)
+const SORTABLE_KEYS = new Set(['earnings_date', 'price', 'market_cap'])
+const resultSectors = computed(() => [...new Set(allRows.value.map(r => r.sector_zh).filter(Boolean))].sort())
+function sortBy(key) {
+  return (a, b) => {
+    const x = a[key], y = b[key]
+    if (x == null || y == null) return x == null ? (y == null ? 0 : -1) : 1
+    return x < y ? -1 : x > y ? 1 : 0
+  }
+}
+const tableRef = ref(null)
+function onSelectionChange(list) { selected.value = list.map(r => r.symbol) }
+function canSelectRow(row) { return !addedSymbols.value.has(row.symbol) }
 
 const builtinPresets = [
   {
@@ -131,7 +146,7 @@ function loadConfig(value = {}) {
   }
 }
 async function run() {
-  loading.value = true; error.value = ''; selected.value = []
+  loading.value = true; error.value = ''; selected.value = []; industryQuery.value = ''; tableRef.value?.clearSelection()
   if (earningsOnly.value && !columns.value.includes('earnings_date')) columns.value = ['earnings_date', ...columns.value]
   try { result.value = await api.runStockScreen(config()) }
   catch (e) { result.value = null; error.value = e.message }
@@ -159,6 +174,13 @@ function selectPreset(event) {
     : `${row.name}：${row.purpose}。所需数据：${row.required}。`
 }
 const addedSymbols = ref(new Set()), addingSymbol = ref('')
+async function loadExistingSymbols() {
+  if (!can('btn.daily_watch.write')) return
+  try {
+    const watches = await api.dailyWatches()
+    addedSymbols.value = new Set((Array.isArray(watches) ? watches : []).map(row => String(row.symbol || '').toUpperCase()))
+  } catch { /* 股票列表状态获取失败不阻止筛选 */ }
+}
 async function addOne(row) {
   if (addingSymbol.value || addedSymbols.value.has(row.symbol)) return
   addingSymbol.value = row.symbol
@@ -171,12 +193,13 @@ async function addOne(row) {
     ElMessage.warning(e.message || '加入失败')
   } finally { addingSymbol.value = '' }
 }
-function toggleAll() { selected.value = allSelected.value ? [] : rows.value.map(r => r.symbol) }
 async function bulkAdd() {
-  const picked = rows.value.filter(r => selected.value.includes(r.symbol))
+  const picked = rows.value.filter(r => selected.value.includes(r.symbol) && !addedSymbols.value.has(r.symbol))
   if (!picked.length) return ElMessage.warning('请先选择股票')
   try {
     const response = await api.bulkAddStockScreen(picked.map(r => ({ symbol: r.symbol, sector_zh: r.sector_zh })))
+    addedSymbols.value = new Set([...addedSymbols.value, ...response.added, ...response.skipped].filter(Boolean))
+    selected.value = []; tableRef.value?.clearSelection()
     ElMessage.success(`已加入 ${response.added.length} 只；已存在 ${response.skipped.length} 只；失败 ${response.failed.length} 只`)
   } catch (e) { ElMessage.error(e.message) }
 }
@@ -225,11 +248,11 @@ const activeChips = computed(() => {
 })
 onMounted(async () => {
   try { meta.value = await api.stockScreenOptions() } catch (e) { error.value = e.message }
-  await loadPresets()
+  await Promise.all([loadPresets(), loadExistingSymbols()])
 })
 const cachedScrollY = ref(0)
 onDeactivated(() => { cachedScrollY.value = window.scrollY })
-onActivated(() => { nextTick(() => window.scrollTo({ top: cachedScrollY.value })) })
+onActivated(() => { loadExistingSymbols(); nextTick(() => window.scrollTo({ top: cachedScrollY.value })) })
 </script>
 
 <template>
@@ -344,7 +367,28 @@ onActivated(() => { nextTick(() => window.scrollTo({ top: cachedScrollY.value })
     <section v-if="result" class="panel result-panel">
       <div class="screen-head"><div><h2>筛选结果 · {{ result.count }} 只</h2><p class="sub">{{ result.source }} · {{ result.price_period }} · 财务：{{ result.financial_period }}</p></div><div class="result-actions"><details><summary class="btn">自定义列</summary><div class="column-picker"><label v-for="[key,label] in COLUMNS" :key="key"><input v-model="columns" type="checkbox" :value="key" />{{ label }}</label></div></details><button v-if="can('btn.daily_watch.write')" class="btn" :disabled="!selected.length" @click="bulkAdd">加入股票列表（{{ selected.length }}）</button></div></div>
       <p class="sub">股票池（{{ result.universe || 'SPY' }}）{{ result.universe_count }} 只 → 基础通过 {{ result.prefilter_count }} 只 → 高级通过 {{ result.advanced_pass_count ?? result.count }} 只；当前精算 {{ result.scanned_count }} 只，缺失数据 {{ result.missing_count ?? 0 }} 只。缺失值显示为“缺失”，不会按 0 参与筛选。<template v-if="result.advanced_period">高级口径：{{ result.advanced_period }}。</template></p>
-      <div class="table-wrap screen-table"><table><thead><tr><th><input type="checkbox" :checked="allSelected" @change="toggleAll" /></th><th>代码 / 公司</th><th v-for="key in columns" :key="key">{{ columnLabel[key] }}</th><th>操作</th></tr></thead><tbody><tr v-for="row in rows" :key="row.symbol"><td><input v-model="selected" type="checkbox" :value="row.symbol" /></td><td><b>{{ row.symbol }}</b><small>{{ row.name }}</small></td><td v-for="key in columns" :key="key" :class="[tone(row,key), { missing: row[key] == null }]">{{ display(row,key) }}</td><td class="tool-actions"><button class="detail-icon" type="button" :title="`${row.symbol} 详情`" :aria-label="`${row.symbol} 详情`" @click="openDetail(row)"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H5v18h14V8zM14 3v5h5M8 12h8M8 16h5" /></svg></button><button v-if="can('btn.daily_watch.write')" class="detail-icon" :class="{ added: addedSymbols.has(row.symbol) }" type="button" :disabled="addingSymbol === row.symbol || addedSymbols.has(row.symbol)" :title="addedSymbols.has(row.symbol) ? '已在股票列表' : `${row.symbol} 加入股票列表`" :aria-label="`${row.symbol} 加入股票列表`" @click="addOne(row)"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path v-if="addedSymbols.has(row.symbol)" d="M5 12l5 5L20 7" /><path v-else d="M4 6h11M4 12h11M4 18h7M18 15v6M15 18h6" /></svg></button></td></tr></tbody></table></div>
+      <div v-if="industryQuery" class="table-filter-note">行业筛选：{{ industryQuery }} · 显示 {{ rows.length }} / {{ allRows.length }} 只 <button type="button" @click="industryQuery = ''">清除</button></div>
+      <el-table ref="tableRef" class="screen-table" :data="rows" row-key="symbol" stripe height="650" style="width:100%" @selection-change="onSelectionChange">
+        <el-table-column type="selection" width="44" fixed="left" :selectable="canSelectRow" />
+        <el-table-column label="代码 / 公司" min-width="190" fixed="left">
+          <template #default="{ row }"><b>{{ row.symbol }}</b><small class="company">{{ row.name }}</small></template>
+        </el-table-column>
+        <el-table-column
+          v-for="key in columns"
+          :key="key"
+          :prop="key"
+          :label="columnLabel[key]"
+          :min-width="key === 'earnings_date' ? 200 : key === 'sector_zh' ? 170 : 108"
+          :sortable="SORTABLE_KEYS.has(key)"
+          :sort-method="SORTABLE_KEYS.has(key) ? sortBy(key) : undefined"
+        >
+          <template #header><el-select v-if="key === 'sector_zh'" v-model="industryQuery" class="industry-search" filterable clearable size="small" placeholder="搜索行业" @click.stop><el-option v-for="sector in resultSectors" :key="sector" :label="sector" :value="sector" /></el-select><span v-else>{{ columnLabel[key] }}</span></template>
+          <template #default="{ row }"><span :class="[tone(row,key), { missing: row[key] == null }]">{{ display(row,key) }}</span></template>
+        </el-table-column>
+        <el-table-column label="操作" width="92" fixed="right">
+          <template #default="{ row }"><div class="tool-actions"><button class="detail-icon" type="button" :title="`${row.symbol} 详情`" :aria-label="`${row.symbol} 详情`" @click="openDetail(row)"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H5v18h14V8zM14 3v5h5M8 12h8M8 16h5" /></svg></button><button v-if="can('btn.daily_watch.write') && !addedSymbols.has(row.symbol)" class="detail-icon" type="button" :disabled="addingSymbol === row.symbol" :title="`${row.symbol} 加入股票列表`" :aria-label="`${row.symbol} 加入股票列表`" @click="addOne(row)"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h11M4 12h11M4 18h7M18 15v6M15 18h6" /></svg></button></div></template>
+        </el-table-column>
+      </el-table>
       <div v-if="!rows.length" class="empty">没有股票同时满足当前条件。可以放宽范围或切换“满足任一”。</div>
     </section>
   </div>
@@ -356,5 +400,6 @@ onActivated(() => { nextTick(() => window.scrollTo({ top: cachedScrollY.value })
 .advanced-search { margin-top:16px;border:1px solid var(--line);border-radius:12px;background:rgba(7,14,22,.22); }.advanced-search>summary { display:flex;align-items:center;justify-content:space-between;padding:15px 17px;cursor:pointer;list-style:none;color:#dce6f3; }.advanced-search>summary::-webkit-details-marker { display:none; }.advanced-search>summary span:first-child { display:flex;align-items:center;gap:12px; }.advanced-search>summary small { color:var(--muted);font-weight:400; }.advanced-caret { color:#9eb5da;font-size:12px; }.advanced-search[open] .advanced-caret { font-size:0; }.advanced-search[open] .advanced-caret::after { content:'收起';font-size:12px; }.advanced-search>.field-note { padding:0 17px; }.advanced-groups { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;padding:4px 16px 16px; }.advanced-groups fieldset { min-width:0;border:1px solid var(--line);border-radius:10px;padding:14px;background:rgba(9,17,26,.5); }.advanced-groups legend { padding:0 7px;font-size:13px;color:#cad7e8; }
 .screen-toolbar { display:flex;align-items:flex-end;justify-content:flex-end;gap:12px;margin-top:18px;flex-wrap:wrap; }.screen-toolbar label { min-width:150px; }.screen-toolbar>select { width:130px;height:38px; }.screen-toolbar .btn { height:38px; }.screen-summary { display:flex;justify-content:space-between;align-items:center;gap:14px;margin:18px 0 8px;flex-wrap:wrap; }.chips { display:flex;gap:7px;flex-wrap:wrap; }.chips span,.preset-list span { padding:6px 10px;border-radius:20px;background:#1b2940;color:#9eb5da;font-size:11px; }.preset-controls { display:flex;gap:8px; }.preset-controls input,.preset-controls select { width:150px; }.builtin-presets { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0; }.preset-card { min-height:92px;padding:12px;text-align:left;border:1px solid var(--line);border-radius:10px;background:#101a27;color:#dce6f3;cursor:pointer;display:grid;gap:5px; }.preset-card:hover { border-color:#82a5ff;background:#152238; }.preset-card small,.preset-card em { color:var(--muted);font-size:11px;font-style:normal;line-height:1.4; }.preset-card em { color:#8faedb; }.preset-notice { margin:8px 0;color:#9eb5da;font-size:12px;line-height:1.6; }.preset-notice.incomplete { color:#d9b879; }.preset-list { display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px; }.preset-list button { border:0;background:transparent;color:#8fa4c1;cursor:pointer;margin-left:4px; }.result-panel { margin-top:16px; }.result-actions { display:flex;gap:9px;align-items:center; }.result-actions details { position:relative; }.result-actions summary { list-style:none;cursor:pointer; }.column-picker { position:absolute;right:0;top:44px;z-index:5;width:220px;padding:12px;display:grid;grid-template-columns:1fr 1fr;gap:9px;background:#101a27;border:1px solid var(--line);border-radius:10px;box-shadow:0 16px 40px rgba(0,0,0,.35); }.column-picker label { font-size:11px;color:#b9c6d8;display:flex;gap:6px;align-items:center; }.warn-msg { margin:14px 0;padding:10px 12px;border-left:3px solid #d9b879;background:rgba(217,184,121,.07);color:#d9b879;font-size:12px;line-height:1.6; }.screen-table { max-height:650px; }.screen-table th { position:sticky;top:0;z-index:2;background:#151f2c; }.screen-table td small { display:block;color:var(--muted);max-width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:4px; }.missing { color:#6f7f94; }.tool-actions { white-space:nowrap; }.tool-actions button { width:30px;height:30px;margin-right:4px;border:1px solid #324158;border-radius:7px;background:#152238;color:#9cb7ea;cursor:pointer; }.tool-actions button:hover { border-color:#82a5ff;color:#dce7ff; }
 .tool-actions { white-space:nowrap; }.tool-actions .detail-icon { display:inline-flex;align-items:center;justify-content:center; }.tool-actions .detail-icon + .detail-icon { margin-left:6px; }.detail-icon svg { width:16px;height:16px; }.detail-icon.added { color:#5dd39e;cursor:default; }
+.industry-search { width:145px; }.table-filter-note { margin:12px 0 8px;padding:8px 11px;border-radius:8px;background:rgba(130,165,255,.08);color:#a9bce0;font-size:12px; }.table-filter-note button { margin-left:6px;border:0;background:transparent;color:#82a5ff;cursor:pointer; }.stock-screen-page input[type='checkbox'] { accent-color:#6f95ff; }:deep(.el-table .el-checkbox__inner) { border-color:#52647d;background-color:#111c29; }:deep(.el-table .el-checkbox__input.is-checked .el-checkbox__inner),:deep(.el-table .el-checkbox__input.is-indeterminate .el-checkbox__inner) { border-color:#6f95ff;background-color:#6f95ff; }:deep(.el-table .el-checkbox__input.is-disabled .el-checkbox__inner) { border-color:#344257;background:#182230;opacity:.45; }
 @media(max-width:1200px){.filter-groups,.advanced-groups,.builtin-presets{grid-template-columns:1fr 1fr}.filter-groups fieldset:last-child{grid-column:1/-1}}@media(max-width:760px){.filter-groups,.advanced-groups,.builtin-presets{grid-template-columns:1fr}.filter-groups fieldset:last-child{grid-column:auto}.filter-grid{grid-template-columns:1fr}.span-2{grid-column:auto}.screen-summary,.preset-controls{align-items:stretch;flex-direction:column}.preset-controls input,.preset-controls select{width:100%}.advanced-search>summary span:first-child{align-items:flex-start;flex-direction:column;gap:3px}}
 </style>
