@@ -27,6 +27,7 @@ SECTOR_ZH = {
     "financials": "金融",
     "financial services": "金融",
     "financial": "金融",
+    "finance": "金融",
     "banks": "银行",
     "consumer cyclical": "可选消费",
     "consumer discretionary": "可选消费",
@@ -64,9 +65,9 @@ def _map_sector(en: str | None) -> str:
 
 def _parse_time_label(raw: str | None) -> str:
     t = (raw or "").strip().lower()
-    if "before" in t or t == "bmo":
+    if "before" in t or "pre-market" in t or t == "bmo":
         return "盘前"
-    if "after" in t or t == "amc":
+    if "after" in t or "after-hours" in t or t == "amc":
         return "盘后"
     if "time-not-supplied" in t or not t:
         return "—"

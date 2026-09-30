@@ -7,12 +7,14 @@ from time import time
 
 import httpx
 
-from app.services.earnings_stocks import _map_sector
+from app.services.earnings_stocks import _fetch_calendar, _map_sector
 from app.services.fundamentals import NASDAQ_HEADERS
 from app.user_stocks.stock_screener import SP500_TICKERS
 
 BASE_TTL = 6 * 60 * 60
 SCAN_TTL = 20 * 60
+EARNINGS_FIELDS = ("earnings_date", "earnings_time", "days_to_earnings")
+_all_cache: tuple[float, list[dict]] | None = None
 _base_cache: tuple[float, list[dict]] | None = None
 _metric_cache: dict[str, tuple[float, dict]] = {}
 
@@ -49,24 +51,24 @@ def _number(value):
         return None
 
 
-def _base_universe() -> list[dict]:
-    global _base_cache
+def _nasdaq_all() -> list[dict]:
+    """Nasdaq 全美股列表（含基础字段），失败时返回空列表且不缓存。"""
+    global _all_cache
     now = time()
-    if _base_cache and now - _base_cache[0] < BASE_TTL:
-        return _base_cache[1]
+    if _all_cache and now - _all_cache[0] < BASE_TTL:
+        return _all_cache[1]
     rows = []
     try:
         with httpx.Client(timeout=25, headers=NASDAQ_HEADERS, follow_redirects=True) as client:
             response = client.get(
                 "https://api.nasdaq.com/api/screener/stocks",
-                params={"tableonly": "true", "limit": 5000, "download": "true"},
+                params={"tableonly": "true", "limit": 10000, "download": "true"},
             )
             response.raise_for_status()
             raw = (((response.json().get("data") or {}).get("rows")) or [])
-        allowed = set(SP500_TICKERS)
         for item in raw:
             symbol = str(item.get("symbol") or "").strip().upper().replace(".", "-")
-            if symbol not in allowed:
+            if not symbol:
                 continue
             sector = str(item.get("sector") or "").strip()
             rows.append({
@@ -83,6 +85,40 @@ def _base_universe() -> list[dict]:
             })
     except Exception:
         rows = []
+    if rows:
+        _all_cache = (now, rows)
+    return rows
+
+
+def _earnings_universe(days: int) -> list[dict]:
+    """未来 N 天有财报的全美股，基础字段来自 Nasdaq 股票列表，缺失时用财报日历自带的名称/市值。"""
+    by_symbol = {row["symbol"]: row for row in _nasdaq_all()}
+    rows = []
+    for item in _fetch_calendar(days).get("items") or []:
+        symbol = item["symbol"].replace(".", "-")
+        base = by_symbol.get(symbol) or {
+            "symbol": symbol, "name": item.get("name") or symbol, "exchange": None,
+            "sector": None, "sector_zh": "其他", "industry": None, "ipo_year": None,
+            "market_cap": item.get("market_cap"), "price": None, "volume": None,
+        }
+        row = dict(base)
+        if row.get("market_cap") is None:
+            row["market_cap"] = item.get("market_cap")
+        row["earnings_date"] = item.get("earnings_date")
+        row["earnings_time"] = item.get("time")
+        row["days_to_earnings"] = item.get("days_until")
+        rows.append(row)
+    rows.sort(key=lambda row: (-(row.get("market_cap") or 0), row["symbol"]))
+    return rows
+
+
+def _base_universe() -> list[dict]:
+    global _base_cache
+    now = time()
+    if _base_cache and now - _base_cache[0] < BASE_TTL:
+        return _base_cache[1]
+    allowed = set(SP500_TICKERS)
+    rows = [dict(row) for row in _nasdaq_all() if row["symbol"] in allowed]
     if not rows:
         rows = [{"symbol": s, "name": s, "exchange": None, "sector": None,
                  "sector_zh": "其他", "industry": None, "ipo_year": None,
@@ -406,7 +442,13 @@ def run(config: dict) -> dict:
     filters = config.get("filters") or {}
     logic = config.get("logic") if config.get("logic") in {"all", "any"} else "all"
     max_candidates = max(20, min(int(config.get("max_candidates") or 120), 250))
-    base = _base_universe()
+    try:
+        earnings_days = int(filters.get("earnings_within_days") or 0)
+    except (TypeError, ValueError):
+        earnings_days = 0
+    earnings_days = min(earnings_days, 45) if earnings_days > 0 else 0
+    base = _earnings_universe(earnings_days) if earnings_days else _base_universe()
+    universe_label = f"未来 {earnings_days} 天发布财报的美股" if earnings_days else "S&P 500"
     # AND can safely narrow by base fields; OR must keep the full set for later metrics.
     base_ranges = (filters.get("ranges") or {})
     prefiltered = []
@@ -426,6 +468,10 @@ def run(config: dict) -> dict:
     candidates = prefiltered[:max_candidates]
     advanced = bool(filters.get("advanced_enabled"))
     enriched = _enrich(candidates, advanced=advanced)
+    if earnings_days:
+        by_symbol = {row["symbol"]: row for row in candidates}
+        for row in enriched:
+            row.update({key: by_symbol[row["symbol"]].get(key) for key in EARNINGS_FIELDS})
     if advanced:
         by_sector = {}
         for row in enriched:
@@ -445,6 +491,7 @@ def run(config: dict) -> dict:
     results.sort(key=lambda row: (row.get(sort_key) is not None, row.get(sort_key) or 0), reverse=reverse)
     return {
         "items": results, "count": len(results), "universe_count": len(base),
+        "universe": universe_label, "earnings_within_days": earnings_days or None,
         "prefilter_count": len(prefiltered), "scanned_count": len(candidates),
         "advanced_pass_count": len(results),
         "missing_count": sum(1 for row in enriched if row.get("missing_fields")),
@@ -454,5 +501,6 @@ def run(config: dict) -> dict:
         "financial_period": "Yahoo 当前可得 TTM/最近期口径",
         "advanced_period": ("季度连续性=最近可得单季同比；年度FCF=最近可得年度；相对强弱=SPY；"
                             "波动率=60日年化；最大回撤/高低点=近一年" if advanced else None),
-        "source": "Nasdaq 股票池 + Yahoo 行情/财务",
+        "source": ("Nasdaq 财报日历 + Nasdaq 股票池 + Yahoo 行情/财务" if earnings_days
+                   else "Nasdaq 股票池 + Yahoo 行情/财务"),
     }

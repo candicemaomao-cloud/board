@@ -10,6 +10,7 @@ const selected = ref([]), presetName = ref(''), savingPreset = ref(false)
 const logic = ref('all'), sort = ref('market_cap'), sortDir = ref('desc'), maxCandidates = ref(120)
 const sectors = ref([]), profitableOnly = ref(false), fcfPositive = ref(false), ma50 = ref('any')
 const turnedProfitable = ref(false), earningsMode = ref('include')
+const earningsOnly = ref(false), earningsDays = ref(30)
 const ranges = reactive({
   market_cap: { min: 10, max: null }, price: { min: null, max: null },
   avg_dollar_volume_20d: { min: 20, max: null }, revenue_growth_yoy: { min: null, max: null },
@@ -50,6 +51,7 @@ const COLUMNS = [
   ['days_since_ma50_breakout', '距突破MA50天数'], ['days_since_ma200_breakout', '距突破MA200天数'],
   ['distance_52w_low', '距52周低点'], ['volume_ratio_20d', '成交量/20日均量'],
   ['max_drawdown_1y', '一年最大回撤'], ['days_to_earnings', '距财报天数'],
+  ['earnings_date', '财报日'],
 ]
 const columns = ref(['price', 'market_cap', 'sector_zh', 'avg_dollar_volume_20d', 'revenue_growth_yoy', 'net_margin', 'free_cash_flow_positive', 'pe', 'weekly_return', 'monthly_return', 'above_ma50', 'regression_deviation'])
 const rows = computed(() => result.value?.items || [])
@@ -78,8 +80,8 @@ const builtinPresets = [
     config: { logic: 'all', sort: 'regression_deviation', sort_dir: 'asc', max_candidates: 120, filters: { ranges: { market_cap: { min: 1e10 }, avg_dollar_volume_20d: { min: 2e7 }, regression_deviation: { min: -2.5, max: -1 } }, profitable_only: true, free_cash_flow_positive: true, advanced_enabled: true } },
   },
   {
-    id: 'builtin-earnings', name: '财报研究名单', purpose: '提前整理未来两周发布财报的公司', required: '行情、财报日历', incomplete: '财报确认状态、盘前/盘后字段尚未接入',
-    config: { logic: 'all', sort: 'days_to_earnings', sort_dir: 'asc', max_candidates: 120, filters: { ranges: { market_cap: { min: 1e10 }, avg_dollar_volume_20d: { min: 2e7 }, days_to_earnings: { min: 0, max: 14 } }, earnings_mode: 'include', advanced_enabled: true } },
+    id: 'builtin-earnings', name: '财报研究名单', purpose: '提前整理未来两周发布财报的公司（全美股）', required: '行情、财报日历',
+    config: { logic: 'all', sort: 'days_to_earnings', sort_dir: 'asc', max_candidates: 120, filters: { ranges: { market_cap: { min: 1e10 }, avg_dollar_volume_20d: { min: 2e7 } }, earnings_within_days: 14 } },
   },
 ]
 const allPresets = computed(() => [...builtinPresets, ...presets.value])
@@ -107,6 +109,7 @@ function config() {
       above_ma50: ma50.value === 'above' ? true : ma50.value === 'below' ? false : null,
       advanced_enabled: advancedEnabled, turned_profitable: turnedProfitable.value,
       earnings_mode: earningsMode.value,
+      earnings_within_days: earningsOnly.value ? earningsDays.value : null,
     },
   }
 }
@@ -119,6 +122,7 @@ function loadConfig(value = {}) {
   const f = value.filters || {}; sectors.value = [...(f.sectors || [])]; profitableOnly.value = !!f.profitable_only
   fcfPositive.value = !!f.free_cash_flow_positive; ma50.value = f.above_ma50 === true ? 'above' : f.above_ma50 === false ? 'below' : 'any'
   turnedProfitable.value = !!f.turned_profitable; earningsMode.value = f.earnings_mode || 'include'
+  earningsOnly.value = !!f.earnings_within_days; earningsDays.value = f.earnings_within_days || 30
   for (const key of Object.keys(ranges)) {
     const scale = key === 'market_cap' ? 1e9 : key === 'avg_dollar_volume_20d' ? 1e6 : 1
     ranges[key].min = f.ranges?.[key]?.min == null ? null : f.ranges[key].min / scale
@@ -127,6 +131,7 @@ function loadConfig(value = {}) {
 }
 async function run() {
   loading.value = true; error.value = ''; selected.value = []
+  if (earningsOnly.value && !columns.value.includes('earnings_date')) columns.value = ['earnings_date', ...columns.value]
   try { result.value = await api.runStockScreen(config()) }
   catch (e) { result.value = null; error.value = e.message }
   finally { loading.value = false }
@@ -175,6 +180,11 @@ function display(row, key) {
   if (['market_cap', 'avg_dollar_volume_20d'].includes(key)) return compact(value)
   if (key === 'price') return `$${Number(value).toFixed(2)}`
   if (['revenue_growth_yoy', 'net_margin', 'weekly_return', 'monthly_return', 'regression_deviation', 'volatility_60d', 'max_drawdown_60d', 'distance_52w_high', 'eps_growth_yoy', 'gross_margin_change_yoy', 'operating_margin_change_yoy', 'fcf_margin', 'debt_to_assets', 'sector_pe_percentile', 'relative_spy_1m', 'relative_spy_3m', 'relative_spy_6m', 'distance_52w_low', 'max_drawdown_1y'].includes(key)) return `${Number(value).toFixed(1)}%`
+  if (key === 'earnings_date') {
+    const when = row.days_to_earnings === 0 ? '今天' : row.days_to_earnings != null ? `${row.days_to_earnings}天后` : ''
+    const session = row.earnings_time && row.earnings_time !== '—' ? row.earnings_time : ''
+    return [value, when, session].filter(Boolean).join(' · ')
+  }
   if (key === 'free_cash_flow_positive') return value ? '正' : '负'
   if (key === 'above_ma50') return value ? '高于' : '低于'
   if (key === 'pe') return Number(value).toFixed(1)
@@ -188,6 +198,7 @@ function tone(row, key) {
 }
 const activeChips = computed(() => {
   const chips = []
+  if (earningsOnly.value) chips.push(`未来 ${earningsDays.value} 天发布财报（全美股）`)
   for (const [key, value] of Object.entries(ranges)) {
     if (value.min != null || value.max != null) chips.push(`${columnLabel[key]} ${value.min ?? '不限'}～${value.max ?? '不限'}${key === 'market_cap' ? 'B' : key === 'avg_dollar_volume_20d' ? 'M' : ''}`)
   }
@@ -209,7 +220,7 @@ onActivated(() => { nextTick(() => window.scrollTo({ top: cachedScrollY.value })
 
 <template>
   <div class="stock-screen-page">
-    <p class="goal-lead">从标普 500 股票池按基础信息、财务表现、估值和价格走势组合筛选。缺失数据不会按 0 处理。</p>
+    <p class="goal-lead">默认从标普 500 股票池按基础信息、财务表现、估值和价格走势组合筛选；勾选「未来 N 天发布财报」后改为全美股中即将发财报的公司。缺失数据不会按 0 处理。</p>
     <section class="panel screen-filters">
       <div class="screen-head">
         <div><h2>筛选条件</h2><p class="sub">默认同时满足全部条件；较重指标只计算基础条件筛选后的候选股票。</p></div>
@@ -217,6 +228,11 @@ onActivated(() => { nextTick(() => window.scrollTo({ top: cachedScrollY.value })
       </div>
       <div class="filter-groups">
         <fieldset><legend>基础信息</legend><div class="filter-grid">
+          <div class="earnings-pool span-2">
+            <label class="check-label"><input v-model="earningsOnly" type="checkbox" />只看未来</label>
+            <select v-model.number="earningsDays" :disabled="!earningsOnly" aria-label="财报天数"><option :value="7">7 天</option><option :value="14">14 天</option><option :value="30">30 天</option></select>
+            <span>发布财报的股票（全美股）</span>
+          </div>
           <label>市值下限（十亿美元）<input v-model.number="ranges.market_cap.min" type="number" min="0" placeholder="不限" /></label>
           <label>市值上限（十亿美元）<input v-model.number="ranges.market_cap.max" type="number" min="0" placeholder="不限" /></label>
           <label class="span-2">行业（可多选）<el-select v-model="sectors" multiple collapse-tags clearable placeholder="全部行业"><el-option v-for="sector in meta?.sectors || []" :key="sector" :label="sector" :value="sector" /></el-select></label>
@@ -314,7 +330,7 @@ onActivated(() => { nextTick(() => window.scrollTo({ top: cachedScrollY.value })
     <section v-if="result" class="panel result-panel">
       <div class="screen-head"><div><h2>筛选结果 · {{ result.count }} 只</h2><p class="sub">{{ result.source }} · {{ result.price_period }} · 财务：{{ result.financial_period }}</p></div><div class="result-actions"><details><summary class="btn">自定义列</summary><div class="column-picker"><label v-for="[key,label] in COLUMNS" :key="key"><input v-model="columns" type="checkbox" :value="key" />{{ label }}</label></div></details><button v-if="can('btn.daily_watch.write')" class="btn" :disabled="!selected.length" @click="bulkAdd">加入股票列表（{{ selected.length }}）</button></div></div>
       <div v-if="result.truncated" class="warn-msg">基础条件匹配 {{ result.prefilter_count }} 只，本次按市值优先精算前 {{ result.scanned_count }} 只。提高“精算候选上限”可扩大范围。</div>
-      <p class="sub">股票池 {{ result.universe_count }} 只 → 基础通过 {{ result.prefilter_count }} 只 → 高级通过 {{ result.advanced_pass_count ?? result.count }} 只；当前精算 {{ result.scanned_count }} 只，缺失数据 {{ result.missing_count ?? 0 }} 只。缺失值显示为“缺失”，不会按 0 参与筛选。<template v-if="result.advanced_period">高级口径：{{ result.advanced_period }}。</template></p>
+      <p class="sub">股票池（{{ result.universe || 'S&P 500' }}）{{ result.universe_count }} 只 → 基础通过 {{ result.prefilter_count }} 只 → 高级通过 {{ result.advanced_pass_count ?? result.count }} 只；当前精算 {{ result.scanned_count }} 只，缺失数据 {{ result.missing_count ?? 0 }} 只。缺失值显示为“缺失”，不会按 0 参与筛选。<template v-if="result.advanced_period">高级口径：{{ result.advanced_period }}。</template></p>
       <div class="table-wrap screen-table"><table><thead><tr><th><input type="checkbox" :checked="allSelected" @change="toggleAll" /></th><th>代码 / 公司</th><th v-for="key in columns" :key="key">{{ columnLabel[key] }}</th><th>详情</th></tr></thead><tbody><tr v-for="row in rows" :key="row.symbol"><td><input v-model="selected" type="checkbox" :value="row.symbol" /></td><td><b>{{ row.symbol }}</b><small>{{ row.name }}</small></td><td v-for="key in columns" :key="key" :class="[tone(row,key), { missing: row[key] == null }]">{{ display(row,key) }}</td><td class="tool-actions"><button class="detail-icon" type="button" :title="`${row.symbol} 详情`" :aria-label="`${row.symbol} 详情`" @click="openDetail(row)"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H5v18h14V8zM14 3v5h5M8 12h8M8 16h5" /></svg></button></td></tr></tbody></table></div>
       <div v-if="!rows.length" class="empty">没有股票同时满足当前条件。可以放宽范围或切换“满足任一”。</div>
     </section>
@@ -323,7 +339,7 @@ onActivated(() => { nextTick(() => window.scrollTo({ top: cachedScrollY.value })
 
 <style scoped>
 .stock-screen-page { padding-bottom:32px; }.screen-filters { padding:22px; }.screen-head { display:flex;justify-content:space-between;align-items:flex-start;gap:18px;flex-wrap:wrap; }.screen-head h2 { margin:0; }.screen-head .sub { margin:8px 0 0; }.logic-switch { display:flex;padding:3px;border:1px solid var(--line);border-radius:10px;background:#0d1620; }.logic-switch button { border:0;background:transparent;color:var(--muted);padding:8px 13px;border-radius:7px;cursor:pointer; }.logic-switch button.active { background:#253654;color:#a9c1ff; }
-.filter-groups { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:20px; }.filter-groups fieldset { min-width:0;border:1px solid var(--line);border-radius:12px;padding:16px;background:rgba(7,14,22,.28); }.filter-groups legend { padding:0 8px;color:#dce6f3;font-weight:600;font-size:14px; }.filter-grid { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px; }.filter-grid label,.screen-toolbar label { display:grid;gap:7px;color:var(--muted);font-size:11px; }.filter-grid input:not([type=checkbox]),.filter-grid select,.screen-toolbar select,.preset-controls input,.preset-controls select { width:100%;height:38px;box-sizing:border-box;border:1px solid #2c3a4d;border-radius:8px;background:#0d1620;color:#e5edf8;padding:0 11px;outline:none; }.filter-grid input:focus,.filter-grid select:focus,.preset-controls input:focus { border-color:#82a5ff;box-shadow:0 0 0 3px rgba(130,165,255,.12); }.span-2 { grid-column:1/-1; }.check-label { display:flex!important;align-items:center;gap:8px;margin-top:16px; }.field-note { color:var(--muted);font-size:11px;line-height:1.6;margin:12px 0 0; }
+.filter-groups { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:20px; }.filter-groups fieldset { min-width:0;border:1px solid var(--line);border-radius:12px;padding:16px;background:rgba(7,14,22,.28); }.filter-groups legend { padding:0 8px;color:#dce6f3;font-weight:600;font-size:14px; }.filter-grid { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px; }.filter-grid label,.screen-toolbar label { display:grid;gap:7px;color:var(--muted);font-size:11px; }.filter-grid input:not([type=checkbox]),.filter-grid select,.screen-toolbar select,.preset-controls input,.preset-controls select { width:100%;height:38px;box-sizing:border-box;border:1px solid #2c3a4d;border-radius:8px;background:#0d1620;color:#e5edf8;padding:0 11px;outline:none; }.filter-grid input:focus,.filter-grid select:focus,.preset-controls input:focus { border-color:#82a5ff;box-shadow:0 0 0 3px rgba(130,165,255,.12); }.span-2 { grid-column:1/-1; }.earnings-pool { display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:10px 12px;border:1px dashed #33507a;border-radius:10px;background:rgba(130,165,255,.06);color:#dce6f3;font-size:12px; }.earnings-pool .check-label { margin-top:0;color:#dce6f3;font-size:12px; }.earnings-pool select { width:auto!important;height:32px!important;border:1px solid #2c3a4d;border-radius:8px;background:#0d1620;color:#e5edf8;padding:0 8px; }.earnings-pool select:disabled { opacity:.5; }.check-label { display:flex!important;align-items:center;gap:8px;margin-top:16px; }.field-note { color:var(--muted);font-size:11px;line-height:1.6;margin:12px 0 0; }
 .advanced-search { margin-top:16px;border:1px solid var(--line);border-radius:12px;background:rgba(7,14,22,.22); }.advanced-search>summary { display:flex;align-items:center;justify-content:space-between;padding:15px 17px;cursor:pointer;list-style:none;color:#dce6f3; }.advanced-search>summary::-webkit-details-marker { display:none; }.advanced-search>summary span:first-child { display:flex;align-items:center;gap:12px; }.advanced-search>summary small { color:var(--muted);font-weight:400; }.advanced-caret { color:#9eb5da;font-size:12px; }.advanced-search[open] .advanced-caret { font-size:0; }.advanced-search[open] .advanced-caret::after { content:'收起';font-size:12px; }.advanced-search>.field-note { padding:0 17px; }.advanced-groups { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;padding:4px 16px 16px; }.advanced-groups fieldset { min-width:0;border:1px solid var(--line);border-radius:10px;padding:14px;background:rgba(9,17,26,.5); }.advanced-groups legend { padding:0 7px;font-size:13px;color:#cad7e8; }
 .screen-toolbar { display:flex;align-items:flex-end;justify-content:flex-end;gap:12px;margin-top:18px;flex-wrap:wrap; }.screen-toolbar label { min-width:150px; }.screen-toolbar>select { width:130px;height:38px; }.screen-toolbar .btn { height:38px; }.screen-summary { display:flex;justify-content:space-between;align-items:center;gap:14px;margin:18px 0 8px;flex-wrap:wrap; }.chips { display:flex;gap:7px;flex-wrap:wrap; }.chips span,.preset-list span { padding:6px 10px;border-radius:20px;background:#1b2940;color:#9eb5da;font-size:11px; }.preset-controls { display:flex;gap:8px; }.preset-controls input,.preset-controls select { width:150px; }.builtin-presets { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0; }.preset-card { min-height:92px;padding:12px;text-align:left;border:1px solid var(--line);border-radius:10px;background:#101a27;color:#dce6f3;cursor:pointer;display:grid;gap:5px; }.preset-card:hover { border-color:#82a5ff;background:#152238; }.preset-card small,.preset-card em { color:var(--muted);font-size:11px;font-style:normal;line-height:1.4; }.preset-card em { color:#8faedb; }.preset-notice { margin:8px 0;color:#9eb5da;font-size:12px;line-height:1.6; }.preset-notice.incomplete { color:#d9b879; }.preset-list { display:flex;gap:7px;flex-wrap:wrap;margin-bottom:14px; }.preset-list button { border:0;background:transparent;color:#8fa4c1;cursor:pointer;margin-left:4px; }.result-panel { margin-top:16px; }.result-actions { display:flex;gap:9px;align-items:center; }.result-actions details { position:relative; }.result-actions summary { list-style:none;cursor:pointer; }.column-picker { position:absolute;right:0;top:44px;z-index:5;width:220px;padding:12px;display:grid;grid-template-columns:1fr 1fr;gap:9px;background:#101a27;border:1px solid var(--line);border-radius:10px;box-shadow:0 16px 40px rgba(0,0,0,.35); }.column-picker label { font-size:11px;color:#b9c6d8;display:flex;gap:6px;align-items:center; }.warn-msg { margin:14px 0;padding:10px 12px;border-left:3px solid #d9b879;background:rgba(217,184,121,.07);color:#d9b879;font-size:12px;line-height:1.6; }.screen-table { max-height:650px; }.screen-table th { position:sticky;top:0;z-index:2;background:#151f2c; }.screen-table td small { display:block;color:var(--muted);max-width:170px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:4px; }.missing { color:#6f7f94; }.tool-actions { white-space:nowrap; }.tool-actions button { width:30px;height:30px;margin-right:4px;border:1px solid #324158;border-radius:7px;background:#152238;color:#9cb7ea;cursor:pointer; }.tool-actions button:hover { border-color:#82a5ff;color:#dce7ff; }
 .tool-actions .detail-icon { display:inline-flex;align-items:center;justify-content:center; }.detail-icon svg { width:16px;height:16px; }

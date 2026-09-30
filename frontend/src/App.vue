@@ -111,7 +111,7 @@ const IND_NAV = [
 const STOCK_NAV = [
   { key: 'stockScreener', label: '股票筛选', perm: 'menu.stockScreener' },
   { key: 'fundamentals', label: '财报分析', perm: 'menu.fundamentals' },
-  { key: 'earningsStocks', label: '财报股票', perm: 'menu.earningsStocks' },
+  { key: 'earningsStocks', label: '财报股票', perm: 'menu.earningsStocks', hidden: true },
   { key: 'options', label: '期权分析', perm: 'menu.options' },
   { key: 'regression', label: '股票回归线', perm: 'menu.regression' },
   { key: 'dailyWatch', label: '股票列表', perm: 'menu.dailyWatch' },
@@ -272,7 +272,7 @@ const visibleMacroNav = computed(() => MACRO_NAV.filter((item) => can(item.perm)
 const visiblePushNav = computed(() => PUSH_NAV.filter((item) => can(item.perm)))
 const visibleStratNav = computed(() => STRAT_NAV.filter((item) => can(item.perm)))
 const visibleIndNav = computed(() => IND_NAV.filter((item) => can(item.perm)))
-const visibleStockNav = computed(() => STOCK_NAV.filter((item) => can(item.perm)))
+const visibleStockNav = computed(() => STOCK_NAV.filter((item) => !item.hidden && can(item.perm)))
 const visibleCryptoNav = computed(() =>
   CRYPTO_NAV.filter((item) => {
     if (item.key === 'cryptoCustomStrategy') {
@@ -336,7 +336,7 @@ function firstAllowedView() {
       if (key === 'riskHub') return 'risk'
       if (key === 'indicators') return 'indicatorList'
       if (key === 'stockAnalysis') {
-        const first = STOCK_NAV.find((n) => can(n.perm))
+        const first = STOCK_NAV.find((n) => !n.hidden && can(n.perm))
         return first?.key || 'fundamentals'
       }
       if (key === 'cryptoAnalysis') {
@@ -393,6 +393,7 @@ function ensureViewAllowed() {
   }
   // 旧 view 兼容
   if (view.value === 'indicators') view.value = 'indicatorList'
+  if (view.value === 'earningsStocks') view.value = 'stockScreener'
   if (
     view.value === 'cryptoAnalysis' ||
     view.value === 'cryptoTech' ||
