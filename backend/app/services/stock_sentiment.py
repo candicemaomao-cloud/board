@@ -622,112 +622,161 @@ def _aligned_basis_series(fut: list[dict], spot: list[dict]) -> list[dict]:
     return out
 
 
+_yahoo_crumb: tuple[float, str, httpx.Client] | None = None
+
+
+def _yahoo_options_client() -> tuple[httpx.Client, str]:
+    """Reuse one Yahoo session + crumb. httpx will use the system SOCKS proxy when python-socks is installed."""
+    global _yahoo_crumb
+    now = time.time()
+    if _yahoo_crumb and now - _yahoo_crumb[0] < 1800:
+        return _yahoo_crumb[2], _yahoo_crumb[1]
+    headers = {
+        "User-Agent": HEADERS["User-Agent"],
+        "Accept": "application/json,text/plain,*/*",
+    }
+    client = httpx.Client(timeout=25.0, headers=headers, follow_redirects=True)
+    try:
+        client.get("https://fc.yahoo.com")
+        crumb_res = client.get("https://query1.finance.yahoo.com/v1/test/getcrumb")
+        if crumb_res.status_code >= 400 or not crumb_res.text.strip() or "Too Many" in crumb_res.text:
+            raise RuntimeError(f"Yahoo crumb 失败 {crumb_res.status_code}")
+        crumb = crumb_res.text.strip()
+    except Exception:
+        client.close()
+        raise
+    if _yahoo_crumb:
+        try:
+            _yahoo_crumb[2].close()
+        except Exception:
+            pass
+    _yahoo_crumb = (now, crumb, client)
+    return client, crumb
+
+
+def _yahoo_option_chain(symbol: str) -> dict:
+    client, crumb = _yahoo_options_client()
+    res = client.get(
+        f"https://query1.finance.yahoo.com/v7/finance/options/{symbol}",
+        params={"crumb": crumb},
+    )
+    if res.status_code == 401:
+        # crumb expired — force refresh once
+        global _yahoo_crumb
+        if _yahoo_crumb:
+            try:
+                _yahoo_crumb[2].close()
+            except Exception:
+                pass
+        _yahoo_crumb = None
+        client, crumb = _yahoo_options_client()
+        res = client.get(
+            f"https://query1.finance.yahoo.com/v7/finance/options/{symbol}",
+            params={"crumb": crumb},
+        )
+    if res.status_code == 429:
+        raise RuntimeError("Yahoo 期权限流，请稍后再试")
+    if res.status_code >= 400:
+        raise RuntimeError(f"Yahoo 期权错误 {res.status_code}")
+    payload = res.json() if res.headers.get("content-type", "").startswith("application/json") else {}
+    result = ((payload.get("optionChain") or {}).get("result") or [None])[0]
+    if not isinstance(result, dict):
+        err = ((payload.get("optionChain") or {}).get("error") or {}).get("description")
+        raise RuntimeError(err or "无期权链")
+    return result
+
+
+def _nearest_by_strike(rows: list[dict], target: float) -> dict | None:
+    best, best_dist = None, None
+    for row in rows:
+        try:
+            strike = float(row.get("strike"))
+        except (TypeError, ValueError):
+            continue
+        dist = abs(strike - target)
+        if best is None or dist < best_dist:
+            best, best_dist = row, dist
+    return best
+
+
 def _option_pulses(symbols: list[str]) -> dict[str, dict]:
     """近月期权链快照：成交量 Put/Call、OTM skew、简化 GEX。缓存 10 分钟。"""
     from app.user_stocks.options import BSInputs, bs_greeks
 
     syms = [s.strip().upper() for s in symbols if s and str(s).strip()]
-    key = "opt-pulse-v2:" + ",".join(syms)
+    key = "opt-pulse-v3:" + ",".join(syms)
 
     def fetch():
-        from yahooquery import Ticker
-        import pandas as pd
-
         if not syms:
             return {}
-        yq = Ticker(" ".join(syms))
-        chain = yq.option_chain
-        if not isinstance(chain, pd.DataFrame) or chain.empty:
-            return {s: {"error": "无期权链"} for s in syms}
-
-        df = chain.reset_index()
-        exp_col = "expiration" if "expiration" in df.columns else "expiration_date"
-        type_col = "optionType" if "optionType" in df.columns else "option_type"
-        if "symbol" not in df.columns:
-            df["symbol"] = syms[0]
-
-        price_info = yq.price if isinstance(yq.price, dict) else {}
         out: dict[str, dict] = {}
         for sym in syms:
             try:
-                sub_all = df[df["symbol"] == sym]
-                if sub_all.empty:
-                    out[sym] = {"error": "无期权链"}
-                    continue
-                spot_info = price_info.get(sym) or {}
-                spot = spot_info.get("regularMarketPrice") or spot_info.get("postMarketPrice")
+                result = _yahoo_option_chain(sym)
+                quote = result.get("quote") or {}
+                spot = quote.get("regularMarketPrice") or quote.get("postMarketPrice")
                 if spot is None:
                     out[sym] = {"error": "无现价"}
                     continue
                 spot = float(spot)
-                exp = sorted(sub_all[exp_col].unique())[0]
-                sub = sub_all[sub_all[exp_col] == exp]
-                calls = sub[sub[type_col] == "calls"]
-                puts = sub[sub[type_col] == "puts"]
-                cv = float(calls["volume"].fillna(0).sum())
-                pv = float(puts["volume"].fillna(0).sum())
-                co = float(calls["openInterest"].fillna(0).sum())
-                po = float(puts["openInterest"].fillna(0).sum())
+                options = result.get("options") or []
+                if not options:
+                    out[sym] = {"error": "无期权链"}
+                    continue
+                near = options[0]
+                calls = near.get("calls") or []
+                puts = near.get("puts") or []
+                exp_ts = near.get("expirationDate")
+                try:
+                    exp_day = datetime.utcfromtimestamp(int(exp_ts)).strftime("%Y-%m-%d") if exp_ts else None
+                    days = max(int((datetime.utcfromtimestamp(int(exp_ts)).date() - date.today()).days), 1) if exp_ts else 1
+                except (TypeError, ValueError, OSError, OverflowError):
+                    exp_day, days = None, 1
+                cv = sum(float(r.get("volume") or 0) for r in calls)
+                pv = sum(float(r.get("volume") or 0) for r in puts)
+                co = sum(float(r.get("openInterest") or 0) for r in calls)
+                po = sum(float(r.get("openInterest") or 0) for r in puts)
                 pcr_vol = (pv / cv) if cv > 0 else None
                 pcr_oi = (po / co) if co > 0 else None
 
-                # OTM skew：约 95% put IV vs 105% call IV（Yahoo 自带 IV）
-                put_row = puts.iloc[(puts["strike"] - spot * 0.95).abs().argsort()[:1]]
-                call_row = calls.iloc[(calls["strike"] - spot * 1.05).abs().argsort()[:1]]
-                put_iv = float(put_row.iloc[0]["impliedVolatility"]) if not put_row.empty else None
-                call_iv = float(call_row.iloc[0]["impliedVolatility"]) if not call_row.empty else None
-                if put_iv and put_iv > 5:  # yahoo 偶发给小数或百分数；>5 当百分数
+                put_row = _nearest_by_strike(puts, spot * 0.95)
+                call_row = _nearest_by_strike(calls, spot * 1.05)
+                put_iv = float(put_row["impliedVolatility"]) if put_row and put_row.get("impliedVolatility") is not None else None
+                call_iv = float(call_row["impliedVolatility"]) if call_row and call_row.get("impliedVolatility") is not None else None
+                if put_iv and put_iv > 5:
                     put_iv /= 100.0
                 if call_iv and call_iv > 5:
                     call_iv /= 100.0
-                skew_pct = None
-                if put_iv and call_iv and call_iv > 0:
-                    skew_pct = (put_iv - call_iv) / call_iv
+                skew_pct = (put_iv - call_iv) / call_iv if put_iv and call_iv and call_iv > 0 else None
 
-                # 简化 GEX：现价 ±8% 行权价，用 Yahoo IV + BS gamma
                 lo, hi = spot * 0.92, spot * 1.08
-                near_c = calls[(calls["strike"] >= lo) & (calls["strike"] <= hi)]
-                near_p = puts[(puts["strike"] >= lo) & (puts["strike"] <= hi)]
-                exp_ts = pd.Timestamp(exp)
-                days = max((exp_ts - pd.Timestamp.now()).days, 1)
                 T = days / 365.0
                 gex = 0.0
                 gex_n = 0
-                for _, row in near_c.iterrows():
-                    iv = float(row.get("impliedVolatility") or 0)
+                for row, side in [*( (r, "call") for r in calls ), *( (r, "put") for r in puts )]:
+                    try:
+                        strike = float(row.get("strike"))
+                        iv = float(row.get("impliedVolatility") or 0)
+                        oi = float(row.get("openInterest") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if strike < lo or strike > hi:
+                        continue
                     if iv > 5:
                         iv /= 100.0
-                    oi = float(row.get("openInterest") or 0)
                     if iv <= 0 or oi <= 0:
                         continue
                     try:
-                        g = bs_greeks(
-                            BSInputs(S=spot, K=float(row["strike"]), T=T, r=0.045, sigma=iv, option_type="call")
-                        )["gamma"]
+                        g = bs_greeks(BSInputs(S=spot, K=strike, T=T, r=0.045, sigma=iv, option_type=side))["gamma"]
                     except Exception:
                         continue
-                    gex += g * oi * 100 * spot
-                    gex_n += 1
-                for _, row in near_p.iterrows():
-                    iv = float(row.get("impliedVolatility") or 0)
-                    if iv > 5:
-                        iv /= 100.0
-                    oi = float(row.get("openInterest") or 0)
-                    if iv <= 0 or oi <= 0:
-                        continue
-                    try:
-                        g = bs_greeks(
-                            BSInputs(S=spot, K=float(row["strike"]), T=T, r=0.045, sigma=iv, option_type="put")
-                        )["gamma"]
-                    except Exception:
-                        continue
-                    gex -= g * oi * 100 * spot
+                    gex += (g if side == "call" else -g) * oi * 100 * spot
                     gex_n += 1
 
                 out[sym] = {
                     "symbol": sym,
                     "spot": round(spot, 2),
-                    "expiration": exp_ts.strftime("%Y-%m-%d"),
+                    "expiration": exp_day,
                     "days_to_exp": days,
                     "call_vol": round(cv, 0),
                     "put_vol": round(pv, 0),
@@ -840,7 +889,11 @@ def _derivative_cards(*, asof_d: date) -> list[dict]:
     ]
     pulses = {}
     try:
-        pulses = _option_pulses(["SPY", *sectors])
+        # SPY first; only pull sector chains if index options work (avoids Yahoo 429 storms).
+        pulses = _option_pulses(["SPY"])
+        if not (pulses.get("SPY") or {}).get("error"):
+            sector_pulses = _option_pulses(sectors)
+            pulses.update(sector_pulses)
     except Exception:  # noqa: BLE001
         pulses = {}
 
