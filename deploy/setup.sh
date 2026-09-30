@@ -73,6 +73,8 @@ Wants=network-online.target
 [Service]
 User=$RUN_USER
 WorkingDirectory=$REPO_DIR/backend
+Environment=HOME=$HOME
+Environment=XDG_CACHE_HOME=$REPO_DIR/backend/data/cache
 ExecStart=$REPO_DIR/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8001
 Restart=always
 RestartSec=5

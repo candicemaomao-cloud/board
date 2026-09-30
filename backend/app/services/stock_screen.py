@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import math
 from datetime import datetime, timezone
+from pathlib import Path
 from statistics import pstdev
 from time import time
 
@@ -228,18 +229,24 @@ def _module_map(ticker, attr) -> dict:
         return {}
 
 
-def _history_map(symbols: list[str]) -> dict[str, list[dict]]:
-    if not symbols:
-        return {}
+def _ensure_yf_cache():
+    """Point yfinance SQLite caches at a writable dir. Concurrent thread writes often break the default path."""
+    cache_dir = Path(__file__).resolve().parents[2] / "data" / "yfinance_cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
     try:
         import yfinance as yf
-        frame = yf.download(
-            tickers=" ".join(s.replace("-", ".") for s in symbols), period="1y", interval="1d",
-            auto_adjust=False, progress=False, group_by="ticker", threads=True, timeout=25,
-        )
+        from yfinance import cache as yf_cache
+        yf.set_tz_cache_location(str(cache_dir))
+        if hasattr(yf_cache, "set_cache_location"):
+            yf_cache.set_cache_location(str(cache_dir))
     except Exception:
-        return {}
+        pass
+
+
+def _frame_to_history(frame, symbols: list[str]) -> dict[str, list[dict]]:
     out = {}
+    if frame is None or getattr(frame, "empty", True):
+        return out
     many = len(symbols) > 1
     for symbol in symbols:
         yf_symbol = symbol.replace("-", ".")
@@ -247,15 +254,98 @@ def _history_map(symbols: list[str]) -> dict[str, list[dict]]:
             part = frame[yf_symbol] if many else frame
             records = []
             for idx, row in part.iterrows():
-                close = _number(row.get("Close"))
+                close = _number(row.get("Close") or row.get("close") or row.get("adjclose"))
                 if close is None:
                     continue
-                records.append({"date": idx.date(), "close": close, "volume": _number(row.get("Volume"))})
+                records.append({
+                    "date": idx.date() if hasattr(idx, "date") else idx,
+                    "close": close,
+                    "volume": _number(row.get("Volume") or row.get("volume")),
+                })
             if records:
                 out[symbol] = records
         except Exception:
             continue
     return out
+
+
+def _history_map(symbols: list[str]) -> dict[str, list[dict]]:
+    if not symbols:
+        return {}
+    _ensure_yf_cache()
+    out = {}
+    # Small batches + no threads avoids yfinance SQLite "unable to open database file" on servers.
+    batch_size = 40
+    try:
+        import yfinance as yf
+        for i in range(0, len(symbols), batch_size):
+            batch = symbols[i:i + batch_size]
+            try:
+                frame = yf.download(
+                    tickers=" ".join(s.replace("-", ".") for s in batch), period="1y", interval="1d",
+                    auto_adjust=False, progress=False, group_by="ticker", threads=False, timeout=25,
+                )
+                out.update(_frame_to_history(frame, batch))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    missing = [s for s in symbols if s not in out]
+    if not missing:
+        return out
+    try:
+        from yahooquery import Ticker
+        for i in range(0, len(missing), batch_size):
+            batch = missing[i:i + batch_size]
+            try:
+                hist = Ticker(
+                    [s.replace("-", ".") for s in batch],
+                    asynchronous=True, max_workers=8, timeout=18,
+                ).history(period="1y", interval="1d")
+            except Exception:
+                continue
+            if hist is None or getattr(hist, "empty", True):
+                continue
+            frame = hist.reset_index()
+            symbol_col = next((c for c in ("symbol", "Symbol") if c in frame.columns), None)
+            date_col = next((c for c in ("date", "Date") if c in frame.columns), None)
+            if not symbol_col:
+                out.update(_frame_to_history(hist, batch))
+                continue
+            for symbol in batch:
+                yf_symbol = symbol.replace("-", ".")
+                try:
+                    part = frame[frame[symbol_col] == yf_symbol]
+                    records = []
+                    for _, row in part.iterrows():
+                        close = _number(row.get("close") or row.get("adjclose") or row.get("Close"))
+                        if close is None:
+                            continue
+                        date_value = row.get(date_col) if date_col else None
+                        records.append({
+                            "date": date_value.date() if hasattr(date_value, "date") else date_value,
+                            "close": close,
+                            "volume": _number(row.get("volume") or row.get("Volume")),
+                        })
+                    if records:
+                        out[symbol] = records
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return out
+
+
+def _merge_metrics(base: dict, metrics: dict) -> dict:
+    """Keep Nasdaq base fields when Yahoo enrichment returns None."""
+    row = dict(base)
+    for key, value in metrics.items():
+        if key.startswith("_"):
+            continue
+        if value is None and row.get(key) is not None:
+            continue
+        row[key] = value
+    return row
 
 
 def _trend_metrics(rows: list[dict], benchmark_rows: list[dict] | None = None) -> dict:
@@ -476,8 +566,7 @@ def _enrich(base_rows: list[dict], advanced: bool = False) -> list[dict]:
             _metric_cache[symbol] = (now, metrics)
     out = []
     for base in base_rows:
-        row = dict(base)
-        row.update((_metric_cache.get(base["symbol"]) or (0, {}))[1])
+        row = _merge_metrics(base, (_metric_cache.get(base["symbol"]) or (0, {}))[1])
         row["free_cash_flow_positive"] = row.get("free_cash_flow") > 0 if row.get("free_cash_flow") is not None else None
         row["missing_fields"] = [key for key in NUMERIC_FIELDS | (ADVANCED_NUMERIC_FIELDS if advanced else set()) if row.get(key) is None]
         out.append(row)
