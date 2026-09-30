@@ -228,11 +228,6 @@ onActivated(() => { nextTick(() => window.scrollTo({ top: cachedScrollY.value })
       </div>
       <div class="filter-groups">
         <fieldset><legend>基础信息</legend><div class="filter-grid">
-          <div class="earnings-pool span-2">
-            <label class="check-label"><input v-model="earningsOnly" type="checkbox" />只看未来</label>
-            <select v-model.number="earningsDays" :disabled="!earningsOnly" aria-label="财报天数"><option :value="7">7 天</option><option :value="14">14 天</option><option :value="30">30 天</option></select>
-            <span>发布财报的股票（全美股）</span>
-          </div>
           <label>市值下限（十亿美元）<input v-model.number="ranges.market_cap.min" type="number" min="0" placeholder="不限" /></label>
           <label>市值上限（十亿美元）<input v-model.number="ranges.market_cap.max" type="number" min="0" placeholder="不限" /></label>
           <label class="span-2">行业（可多选）<el-select v-model="sectors" multiple collapse-tags clearable placeholder="全部行业"><el-option v-for="sector in meta?.sectors || []" :key="sector" :label="sector" :value="sector" /></el-select></label>
@@ -241,6 +236,11 @@ onActivated(() => { nextTick(() => window.scrollTo({ top: cachedScrollY.value })
           <label>20日日均成交额下限（百万美元）<input v-model.number="ranges.avg_dollar_volume_20d.min" type="number" min="0" placeholder="不限" /></label>
         </div></fieldset>
         <fieldset><legend>财务表现与估值</legend><div class="filter-grid">
+          <div class="earnings-pool span-2">
+            <label class="check-label"><input v-model="earningsOnly" type="checkbox" />只看未来</label>
+            <select v-model.number="earningsDays" :disabled="!earningsOnly" aria-label="财报天数"><option :value="7">7 天</option><option :value="14">14 天</option><option :value="30">30 天</option></select>
+            <span>发布财报的股票（全美股）</span>
+          </div>
           <label>营收同比下限（%）<input v-model.number="ranges.revenue_growth_yoy.min" type="number" placeholder="不限" /></label>
           <label>营收同比上限（%）<input v-model.number="ranges.revenue_growth_yoy.max" type="number" placeholder="不限" /></label>
           <label>净利率下限（%）<input v-model.number="ranges.net_margin.min" type="number" placeholder="不限" /></label>
