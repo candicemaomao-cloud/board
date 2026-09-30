@@ -14,6 +14,12 @@ from app.user_stocks.stock_screener import SP500_TICKERS
 BASE_TTL = 6 * 60 * 60
 SCAN_TTL = 20 * 60
 EARNINGS_FIELDS = ("earnings_date", "earnings_time", "days_to_earnings")
+MAX_SCAN = 1000
+
+
+class ScreenTooLarge(ValueError):
+    pass
+
 _all_cache: tuple[float, list[dict]] | None = None
 _base_cache: tuple[float, list[dict]] | None = None
 _metric_cache: dict[str, tuple[float, dict]] = {}
@@ -90,12 +96,15 @@ def _nasdaq_all() -> list[dict]:
     return rows
 
 
-def _earnings_universe(days: int) -> list[dict]:
-    """未来 N 天有财报的全美股，基础字段来自 Nasdaq 股票列表，缺失时用财报日历自带的名称/市值。"""
+def _earnings_universe(days: int, pool: str) -> list[dict]:
+    """股票池内未来 N 天有财报的股票，基础字段来自 Nasdaq 股票列表，缺失时用财报日历自带的名称/市值。"""
     by_symbol = {row["symbol"]: row for row in _nasdaq_all()}
+    allowed = set(SP500_TICKERS) if pool == "sp500" else None
     rows = []
     for item in _fetch_calendar(days).get("items") or []:
         symbol = item["symbol"].replace(".", "-")
+        if allowed is not None and symbol not in allowed:
+            continue
         base = by_symbol.get(symbol) or {
             "symbol": symbol, "name": item.get("name") or symbol, "exchange": None,
             "sector": None, "sector_zh": "其他", "industry": None, "ipo_year": None,
@@ -125,6 +134,14 @@ def _base_universe() -> list[dict]:
                  "market_cap": None, "price": None, "volume": None} for s in SP500_TICKERS]
     rows.sort(key=lambda row: (-(row.get("market_cap") or 0), row["symbol"]))
     _base_cache = (now, rows)
+    return rows
+
+
+def _all_universe() -> list[dict]:
+    rows = [dict(row) for row in _nasdaq_all()]
+    if not rows:
+        raise RuntimeError("Nasdaq 全美股列表获取失败")
+    rows.sort(key=lambda row: (-(row.get("market_cap") or 0), row["symbol"]))
     return rows
 
 
@@ -441,14 +458,19 @@ def _conditions(row, filters: dict) -> list[bool]:
 def run(config: dict) -> dict:
     filters = config.get("filters") or {}
     logic = config.get("logic") if config.get("logic") in {"all", "any"} else "all"
-    max_candidates = max(20, min(int(config.get("max_candidates") or 120), 250))
+    pool = "all" if config.get("universe") == "all" else "sp500"
     try:
         earnings_days = int(filters.get("earnings_within_days") or 0)
     except (TypeError, ValueError):
         earnings_days = 0
     earnings_days = min(earnings_days, 45) if earnings_days > 0 else 0
-    base = _earnings_universe(earnings_days) if earnings_days else _base_universe()
-    universe_label = f"未来 {earnings_days} 天发布财报的美股" if earnings_days else "S&P 500"
+    if earnings_days:
+        base = _earnings_universe(earnings_days, pool)
+    else:
+        base = _all_universe() if pool == "all" else _base_universe()
+    universe_label = "全美股" if pool == "all" else "S&P 500"
+    if earnings_days:
+        universe_label += f" · 未来 {earnings_days} 天发布财报"
     # AND can safely narrow by base fields; OR must keep the full set for later metrics.
     base_ranges = (filters.get("ranges") or {})
     prefiltered = []
@@ -465,7 +487,12 @@ def run(config: dict) -> dict:
             checks.append(row.get("sector_zh") in filters["sectors"])
         if not checks or (all(checks) if logic == "all" else any(checks)):
             prefiltered.append(row)
-    candidates = prefiltered[:max_candidates]
+    if len(prefiltered) > MAX_SCAN:
+        raise ScreenTooLarge(
+            f"{universe_label} 中符合基础条件的有 {len(prefiltered)} 只，超过单次精算上限 {MAX_SCAN} 只，"
+            "请加上市值/股价/行业等条件缩小范围（“任一满足”模式不会预先缩小范围）"
+        )
+    candidates = prefiltered
     advanced = bool(filters.get("advanced_enabled"))
     enriched = _enrich(candidates, advanced=advanced)
     if earnings_days:
@@ -491,7 +518,7 @@ def run(config: dict) -> dict:
     results.sort(key=lambda row: (row.get(sort_key) is not None, row.get(sort_key) or 0), reverse=reverse)
     return {
         "items": results, "count": len(results), "universe_count": len(base),
-        "universe": universe_label, "earnings_within_days": earnings_days or None,
+        "universe": universe_label, "pool": pool, "earnings_within_days": earnings_days or None,
         "prefilter_count": len(prefiltered), "scanned_count": len(candidates),
         "advanced_pass_count": len(results),
         "missing_count": sum(1 for row in enriched if row.get("missing_fields")),

@@ -7,7 +7,7 @@ import { can } from '../auth'
 const emit = defineEmits(['open-detail'])
 const meta = ref(null), presets = ref([]), result = ref(null), loading = ref(false), error = ref('')
 const selected = ref([]), presetName = ref(''), savingPreset = ref(false)
-const logic = ref('all'), sort = ref('market_cap'), sortDir = ref('desc'), maxCandidates = ref(120)
+const logic = ref('all'), sort = ref('market_cap'), sortDir = ref('desc'), pool = ref('sp500')
 const sectors = ref([]), profitableOnly = ref(false), fcfPositive = ref(false), ma50 = ref('any')
 const turnedProfitable = ref(false), earningsMode = ref('include')
 const earningsOnly = ref(false), earningsDays = ref(30)
@@ -61,27 +61,27 @@ const columnLabel = Object.fromEntries(COLUMNS)
 const builtinPresets = [
   {
     id: 'builtin-growth', name: '盈利成长', purpose: '找增长且已经赚钱的公司', required: '季度财务、现金流、盈利能力',
-    config: { logic: 'all', sort: 'revenue_growth_yoy', sort_dir: 'desc', max_candidates: 120, filters: { ranges: { market_cap: { min: 1e10 }, avg_dollar_volume_20d: { min: 2e7 }, revenue_growth_yoy: { min: 15 }, net_margin: { min: 10 }, revenue_growth_streak: { min: 4 }, gross_margin_change_yoy: { min: 0 } }, profitable_only: true, free_cash_flow_positive: true, advanced_enabled: true } },
+    config: { logic: 'all', sort: 'revenue_growth_yoy', sort_dir: 'desc', filters: { ranges: { market_cap: { min: 1e10 }, avg_dollar_volume_20d: { min: 2e7 }, revenue_growth_yoy: { min: 15 }, net_margin: { min: 10 }, revenue_growth_streak: { min: 4 }, gross_margin_change_yoy: { min: 0 } }, profitable_only: true, free_cash_flow_positive: true, advanced_enabled: true } },
   },
   {
     id: 'builtin-cash-value', name: '现金流与估值', purpose: '找盈利、现金流为正且 PE 较低的公司', required: 'TTM 估值、年度现金流',
-    config: { logic: 'all', sort: 'pe', sort_dir: 'asc', max_candidates: 120, filters: { ranges: { market_cap: { min: 1e10 }, avg_dollar_volume_20d: { min: 2e7 }, revenue_growth_yoy: { min: 0 }, net_margin: { min: 8 }, pe: { min: 5, max: 25 }, fcf_positive_years: { min: 3 }, fcf_margin: { min: 8 } }, profitable_only: true, free_cash_flow_positive: true, advanced_enabled: true } },
+    config: { logic: 'all', sort: 'pe', sort_dir: 'asc', filters: { ranges: { market_cap: { min: 1e10 }, avg_dollar_volume_20d: { min: 2e7 }, revenue_growth_yoy: { min: 0 }, net_margin: { min: 8 }, pe: { min: 5, max: 25 }, fcf_positive_years: { min: 3 }, fcf_margin: { min: 8 } }, profitable_only: true, free_cash_flow_positive: true, advanced_enabled: true } },
   },
   {
     id: 'builtin-pullback', name: '上升趋势中的回落', purpose: '中期趋势向上、近期回落的股票', required: '行情、均线、财报日历', incomplete: '50 日线与 200 日线关系、50 日线变化尚未接入',
-    config: { logic: 'all', sort: 'weekly_return', sort_dir: 'asc', max_candidates: 120, filters: { ranges: { market_cap: { min: 1e10 }, avg_dollar_volume_20d: { min: 3e7 }, weekly_return: { min: -8, max: -2 }, distance_52w_high: { min: -15, max: -5 }, days_to_earnings: { min: 7 } }, above_ma50: true, earnings_mode: 'exclude', advanced_enabled: true } },
+    config: { logic: 'all', sort: 'weekly_return', sort_dir: 'asc', filters: { ranges: { market_cap: { min: 1e10 }, avg_dollar_volume_20d: { min: 3e7 }, weekly_return: { min: -8, max: -2 }, distance_52w_high: { min: -15, max: -5 }, days_to_earnings: { min: 7 } }, above_ma50: true, earnings_mode: 'exclude', advanced_enabled: true } },
   },
   {
     id: 'builtin-breakout', name: '放量创近期新高', purpose: '找价格和成交量同时出现变化的股票', required: '行情、成交量、财报日历', incomplete: '此前 20 日最高收盘价、最新交易日涨跌幅尚未接入',
-    config: { logic: 'all', sort: 'volume_ratio_20d', sort_dir: 'desc', max_candidates: 120, filters: { ranges: { market_cap: { min: 2e9 }, price: { min: 5 }, avg_dollar_volume_20d: { min: 3e7 }, volume_ratio_20d: { min: 1.5 }, days_to_earnings: { min: 3 } }, above_ma50: true, earnings_mode: 'exclude', advanced_enabled: true } },
+    config: { logic: 'all', sort: 'volume_ratio_20d', sort_dir: 'desc', filters: { ranges: { market_cap: { min: 2e9 }, price: { min: 5 }, avg_dollar_volume_20d: { min: 3e7 }, volume_ratio_20d: { min: 1.5 }, days_to_earnings: { min: 3 } }, above_ma50: true, earnings_mode: 'exclude', advanced_enabled: true } },
   },
   {
     id: 'builtin-regression-below', name: '回归线下方观察', purpose: '寻找低于上升价格趋势的股票', required: '行情、回归偏离、财务与现金流', incomplete: '回归窗口、斜率、偏离持续天数尚未接入筛选器',
-    config: { logic: 'all', sort: 'regression_deviation', sort_dir: 'asc', max_candidates: 120, filters: { ranges: { market_cap: { min: 1e10 }, avg_dollar_volume_20d: { min: 2e7 }, regression_deviation: { min: -2.5, max: -1 } }, profitable_only: true, free_cash_flow_positive: true, advanced_enabled: true } },
+    config: { logic: 'all', sort: 'regression_deviation', sort_dir: 'asc', filters: { ranges: { market_cap: { min: 1e10 }, avg_dollar_volume_20d: { min: 2e7 }, regression_deviation: { min: -2.5, max: -1 } }, profitable_only: true, free_cash_flow_positive: true, advanced_enabled: true } },
   },
   {
     id: 'builtin-earnings', name: '财报研究名单', purpose: '提前整理未来两周发布财报的公司（全美股）', required: '行情、财报日历',
-    config: { logic: 'all', sort: 'days_to_earnings', sort_dir: 'asc', max_candidates: 120, filters: { ranges: { market_cap: { min: 1e10 }, avg_dollar_volume_20d: { min: 2e7 } }, earnings_within_days: 14 } },
+    config: { logic: 'all', sort: 'days_to_earnings', sort_dir: 'asc', universe: 'all', filters: { ranges: { market_cap: { min: 1e10 }, avg_dollar_volume_20d: { min: 2e7 } }, earnings_within_days: 14 } },
   },
 ]
 const allPresets = computed(() => [...builtinPresets, ...presets.value])
@@ -101,7 +101,7 @@ function config() {
   const advancedEnabled = turnedProfitable.value || Object.entries(payloadRanges).some(([key, value]) => ADVANCED_KEYS.has(key) && (value.min != null || value.max != null))
   return {
     logic: logic.value, sort: sort.value, sort_dir: sortDir.value, columns: columns.value,
-    max_candidates: maxCandidates.value,
+    universe: pool.value,
     filters: {
       ranges: payloadRanges, sectors: sectors.value,
       profitable_only: profitableOnly.value,
@@ -118,7 +118,7 @@ function openDetail(row) {
 }
 function loadConfig(value = {}) {
   logic.value = value.logic || 'all'; sort.value = value.sort || 'market_cap'; sortDir.value = value.sort_dir || 'desc'
-  maxCandidates.value = value.max_candidates || 120; columns.value = value.columns?.length ? [...value.columns] : columns.value
+  pool.value = value.universe === 'all' ? 'all' : 'sp500'; columns.value = value.columns?.length ? [...value.columns] : columns.value
   const f = value.filters || {}; sectors.value = [...(f.sectors || [])]; profitableOnly.value = !!f.profitable_only
   fcfPositive.value = !!f.free_cash_flow_positive; ma50.value = f.above_ma50 === true ? 'above' : f.above_ma50 === false ? 'below' : 'any'
   turnedProfitable.value = !!f.turned_profitable; earningsMode.value = f.earnings_mode || 'include'
@@ -198,7 +198,7 @@ function tone(row, key) {
 }
 const activeChips = computed(() => {
   const chips = []
-  if (earningsOnly.value) chips.push(`未来 ${earningsDays.value} 天发布财报（全美股）`)
+  if (earningsOnly.value) chips.push(`未来 ${earningsDays.value} 天发布财报`)
   for (const [key, value] of Object.entries(ranges)) {
     if (value.min != null || value.max != null) chips.push(`${columnLabel[key]} ${value.min ?? '不限'}～${value.max ?? '不限'}${key === 'market_cap' ? 'B' : key === 'avg_dollar_volume_20d' ? 'M' : ''}`)
   }
@@ -220,7 +220,7 @@ onActivated(() => { nextTick(() => window.scrollTo({ top: cachedScrollY.value })
 
 <template>
   <div class="stock-screen-page">
-    <p class="goal-lead">默认从标普 500 股票池按基础信息、财务表现、估值和价格走势组合筛选；勾选「未来 N 天发布财报」后改为全美股中即将发财报的公司。缺失数据不会按 0 处理。</p>
+    <p class="goal-lead">在底部选择股票池（标普 500 / 全美股），按基础信息、财务表现、估值和价格走势组合筛选；符合基础条件的股票会全部精算，不做截断。缺失数据不会按 0 处理。</p>
     <section class="panel screen-filters">
       <div class="screen-head">
         <div><h2>筛选条件</h2><p class="sub">默认同时满足全部条件；较重指标只计算基础条件筛选后的候选股票。</p></div>
@@ -239,7 +239,7 @@ onActivated(() => { nextTick(() => window.scrollTo({ top: cachedScrollY.value })
           <div class="earnings-pool span-2">
             <label class="check-label"><input v-model="earningsOnly" type="checkbox" />只看未来</label>
             <select v-model.number="earningsDays" :disabled="!earningsOnly" aria-label="财报天数"><option :value="7">7 天</option><option :value="14">14 天</option><option :value="30">30 天</option></select>
-            <span>发布财报的股票（全美股）</span>
+            <span>发布财报的股票</span>
           </div>
           <label>营收同比下限（%）<input v-model.number="ranges.revenue_growth_yoy.min" type="number" placeholder="不限" /></label>
           <label>营收同比上限（%）<input v-model.number="ranges.revenue_growth_yoy.max" type="number" placeholder="不限" /></label>
@@ -312,7 +312,7 @@ onActivated(() => { nextTick(() => window.scrollTo({ top: cachedScrollY.value })
         </div>
       </details>
       <div class="screen-toolbar">
-        <label>精算候选上限<select v-model.number="maxCandidates"><option :value="60">60只</option><option :value="120">120只</option><option :value="200">200只</option><option :value="250">250只</option></select></label>
+        <label>股票池<select v-model="pool"><option value="sp500">标普 500</option><option value="all">全美股</option></select></label>
         <label>排序<select v-model="sort"><option v-for="[key, label] in COLUMNS" :key="key" :value="key">{{ label }}</option></select></label>
         <select v-model="sortDir" aria-label="排序方向"><option value="desc">从高到低</option><option value="asc">从低到高</option></select>
         <button class="btn btn-primary" :disabled="loading || presetIncomplete" @click="run">{{ loading ? '筛选中…' : presetIncomplete ? '缺少高级条件' : '运行筛选' }}</button>
@@ -329,7 +329,6 @@ onActivated(() => { nextTick(() => window.scrollTo({ top: cachedScrollY.value })
     <p v-if="error" class="error" role="alert">{{ error }}</p>
     <section v-if="result" class="panel result-panel">
       <div class="screen-head"><div><h2>筛选结果 · {{ result.count }} 只</h2><p class="sub">{{ result.source }} · {{ result.price_period }} · 财务：{{ result.financial_period }}</p></div><div class="result-actions"><details><summary class="btn">自定义列</summary><div class="column-picker"><label v-for="[key,label] in COLUMNS" :key="key"><input v-model="columns" type="checkbox" :value="key" />{{ label }}</label></div></details><button v-if="can('btn.daily_watch.write')" class="btn" :disabled="!selected.length" @click="bulkAdd">加入股票列表（{{ selected.length }}）</button></div></div>
-      <div v-if="result.truncated" class="warn-msg">基础条件匹配 {{ result.prefilter_count }} 只，本次按市值优先精算前 {{ result.scanned_count }} 只。提高“精算候选上限”可扩大范围。</div>
       <p class="sub">股票池（{{ result.universe || 'S&P 500' }}）{{ result.universe_count }} 只 → 基础通过 {{ result.prefilter_count }} 只 → 高级通过 {{ result.advanced_pass_count ?? result.count }} 只；当前精算 {{ result.scanned_count }} 只，缺失数据 {{ result.missing_count ?? 0 }} 只。缺失值显示为“缺失”，不会按 0 参与筛选。<template v-if="result.advanced_period">高级口径：{{ result.advanced_period }}。</template></p>
       <div class="table-wrap screen-table"><table><thead><tr><th><input type="checkbox" :checked="allSelected" @change="toggleAll" /></th><th>代码 / 公司</th><th v-for="key in columns" :key="key">{{ columnLabel[key] }}</th><th>详情</th></tr></thead><tbody><tr v-for="row in rows" :key="row.symbol"><td><input v-model="selected" type="checkbox" :value="row.symbol" /></td><td><b>{{ row.symbol }}</b><small>{{ row.name }}</small></td><td v-for="key in columns" :key="key" :class="[tone(row,key), { missing: row[key] == null }]">{{ display(row,key) }}</td><td class="tool-actions"><button class="detail-icon" type="button" :title="`${row.symbol} 详情`" :aria-label="`${row.symbol} 详情`" @click="openDetail(row)"><svg viewBox="0 0 24 24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H5v18h14V8zM14 3v5h5M8 12h8M8 16h5" /></svg></button></td></tr></tbody></table></div>
       <div v-if="!rows.length" class="empty">没有股票同时满足当前条件。可以放宽范围或切换“满足任一”。</div>

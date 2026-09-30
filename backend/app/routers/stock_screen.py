@@ -11,7 +11,7 @@ from app.database import get_db
 from app.models import StockScreenPreset, User
 from app.services.auth import has_perm, require_user
 from app.services.daily_watch import DailyWatchError, create_watch, list_watches, lookup_quote
-from app.services.stock_screen import options, run
+from app.services.stock_screen import ScreenTooLarge, options, run
 
 router = APIRouter()
 
@@ -22,7 +22,7 @@ class ScreenBody(BaseModel):
     sort: str = "market_cap"
     sort_dir: str = "desc"
     columns: list[str] = Field(default_factory=list)
-    max_candidates: int = Field(default=120, ge=20, le=250)
+    universe: str = "sp500"
 
 
 class PresetBody(BaseModel):
@@ -31,7 +31,7 @@ class PresetBody(BaseModel):
 
 
 class BulkAddBody(BaseModel):
-    rows: list[dict] = Field(min_length=1, max_length=100)
+    rows: list[dict] = Field(min_length=1, max_length=1000)
 
 
 def _preset_out(row):
@@ -52,6 +52,8 @@ def screen_options():
 def run_screen(payload: ScreenBody):
     try:
         return run(payload.model_dump())
+    except ScreenTooLarge as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"股票筛选暂不可用：{exc}") from exc
 
