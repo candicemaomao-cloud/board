@@ -17,6 +17,7 @@ from app.routers import (
     earnings_stocks,
     factors,
     fundamentals,
+    home,
     macro,
     market,
     plans,
@@ -220,6 +221,7 @@ app.include_router(plans.router, prefix="/api/plans", tags=["plans"], dependenci
 app.include_router(snapshots.router, prefix="/api/snapshots", tags=["snapshots"], dependencies=_auth)
 app.include_router(trades.router, prefix="/api/trades", tags=["trades"], dependencies=_auth)
 app.include_router(analytics.router, prefix="/api/analytics", tags=["analytics"], dependencies=_auth)
+app.include_router(home.router, prefix="/api/home", tags=["home"], dependencies=_auth)
 app.include_router(settings_router.router, prefix="/api/settings", tags=["settings"], dependencies=_auth)
 app.include_router(market.router, prefix="/api/market", tags=["market"], dependencies=_auth)
 app.include_router(macro.router, prefix="/api/macro", tags=["macro"], dependencies=_auth)

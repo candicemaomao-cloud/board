@@ -1,0 +1,89 @@
+:root {
+  color-scheme: dark;
+  --adm-color-primary: #7da2ff;
+  --adm-color-success: #46d19b;
+  --adm-color-danger: #ef7892;
+  --adm-color-text: #eaf0f8;
+  --adm-color-text-secondary: #8292a8;
+  --adm-color-background: #101b28;
+  --adm-border-color: #223247;
+  --adm-font-size-main: 14px;
+}
+
+.adm-button-primary {
+  --background-color: linear-gradient(135deg, #7399fa, #88adff);
+  --border-color: transparent;
+  color: #08111d;
+  font-weight: 800;
+}
+
+.mobile-form .adm-list,
+.mobile-form .adm-list-body,
+.mobile-form .adm-list-item {
+  background: transparent;
+}
+.mobile-form .adm-list-body { border: 0; }
+.mobile-form .adm-list-item { padding-left: 0; }
+.mobile-form .adm-list-item-content { border: 0; padding: 0 0 13px; }
+.mobile-form .adm-form-item-label { color: #9caec3; font-size: 12px; }
+.mobile-form .adm-input {
+  min-height: 48px;
+  padding: 0 14px;
+  border: 1px solid #2b3c52;
+  border-radius: 12px;
+  background: #0a1520;
+}
+.mobile-form .adm-input:focus-within {
+  border-color: #7da2ff;
+  box-shadow: 0 0 0 3px rgba(125, 162, 255, .12);
+}
+.mobile-form .adm-input-element {
+  width: 100%;
+  height: auto;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+.mobile-form .adm-form-footer { padding: 4px 0 0; }
+
+.bottom-nav { display: block; padding-top: 4px; }
+.bottom-nav .adm-tab-bar { height: 60px; }
+.bottom-nav .adm-tab-bar-item { color: #77889e; }
+.bottom-nav .adm-tab-bar-item-active { color: #7da2ff; }
+.bottom-nav .adm-tab-bar-item-icon { height: 24px; }
+.bottom-nav .adm-tab-bar-item-icon svg { width: 21px; height: 21px; }
+
+.search-box .adm-search-bar { flex: 1; min-width: 0; --background: transparent; }
+.search-box .adm-search-bar-input-box { padding-left: 0; border: 0; background: transparent; }
+.search-box .adm-input { color: #eef4fc; }
+
+.mobile-collapse {
+  --border-color: #223247;
+  overflow: hidden;
+  display: grid;
+  gap: 10px;
+  background: transparent;
+}
+.mobile-collapse > .adm-list-body { display: contents; }
+.mobile-collapse .adm-list-item {
+  overflow: hidden;
+  padding-left: 0;
+  border: 1px solid #223247;
+  border-radius: 15px;
+  background: #101b28;
+}
+.mobile-collapse .adm-list-item-content { padding: 0 16px; border: 0; }
+.mobile-collapse .adm-collapse-panel-header { min-height: 56px; font-weight: 700; }
+.mobile-collapse .adm-collapse-panel-content { color: #eaf0f8; }
+
+.filter-card .adm-input {
+  min-height: 44px;
+  padding: 0 12px;
+  border: 1px solid #2b3c52;
+  border-radius: 11px;
+  background: #0a1520;
+}
+
+.adm-toast-mask .adm-toast-main { background: rgba(17, 29, 43, .96); color: #edf4fc; }

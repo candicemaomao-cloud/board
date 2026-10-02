@@ -543,3 +543,15 @@ class StockScreenPreset(Base):
     config: Mapped[str] = mapped_column(Text, default="{}")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
+
+
+class HomeMessageDismissal(Base):
+    """A home-page message dismissed by one user for its generated day/key."""
+
+    __tablename__ = "home_message_dismissals"
+    __table_args__ = (UniqueConstraint("user_id", "message_key", name="uq_home_message_dismissal"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True)
+    message_key: Mapped[str] = mapped_column(String(255), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

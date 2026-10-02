@@ -1,6 +1,6 @@
 import unittest
 from datetime import datetime, timedelta
-from app.services.option_chain_fallback import cboe_expiry
+from app.services.option_chain_fallback import cboe_expirations, cboe_expiry
 
 
 class CboeFallbackTest(unittest.TestCase):
@@ -20,6 +20,10 @@ class CboeFallbackTest(unittest.TestCase):
         self.assertEqual(spot, 100)
         with self.assertRaises(ValueError):
             cboe_expiry(self.payload(), 'AAPL', '2030-01-01')
+
+    def test_lists_available_expirations(self):
+        payload = self.payload()
+        self.assertEqual(cboe_expirations(payload, 'AAPL'), [datetime.now().date().isoformat()])
 
     def test_reject_stale_wrong_symbol_and_zero_oi(self):
         day = datetime.now().date().isoformat()

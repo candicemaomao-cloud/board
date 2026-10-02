@@ -15,6 +15,9 @@ HEADERS = {
 }
 TAPE_TTL = 60
 YAHOO_HOSTS = ("query1.finance.yahoo.com", "query2.finance.yahoo.com")
+YAHOO_SYMBOL_ALIASES = {
+    "USDJPY": "JPY=X",
+}
 
 TAPE = [
     ("SPY", "标普"),
@@ -141,10 +144,49 @@ def fetch_quotes(symbols: list[tuple[str, str]]) -> list[dict]:
     except Exception:
         rows = []
     by_req = {row.get("requested") or row.get("symbol"): row for row in rows}
+
+    missing = [(sym, name) for sym, name in symbols if not (by_req.get(sym) or {}).get("price")]
+    if missing:
+        try:
+            retry_rows = fetch_tv_quotes(missing)
+        except Exception:
+            retry_rows = []
+        for row in retry_rows:
+            key = row.get("requested") or row.get("symbol")
+            if key and row.get("price") is not None:
+                by_req[key] = row
+        missing = [(sym, name) for sym, name in missing if not (by_req.get(sym) or {}).get("price")]
+
+    if missing:
+        def _fallback(sym: str, name: str) -> dict:
+            yahoo_symbol = YAHOO_SYMBOL_ALIASES.get(sym, sym)
+            row = _fetch_one(yahoo_symbol, name)
+            session = us_equity_session()
+            row.update({
+                "symbol": sym,
+                "requested": sym,
+                "source": "yahoo",
+                "session": session["key"],
+                "session_label": session["label"],
+            })
+            return row
+
+        with ThreadPoolExecutor(max_workers=min(10, len(missing))) as pool:
+            jobs = {pool.submit(_fallback, sym, name): (sym, name) for sym, name in missing}
+            for future in as_completed(jobs):
+                sym, _name = jobs[future]
+                try:
+                    by_req[sym] = future.result()
+                except Exception as exc:
+                    previous = by_req.get(sym) or {}
+                    if previous:
+                        previous["error"] = previous.get("error") or f"Yahoo 回退失败: {exc}"
+                        by_req[sym] = previous
+
     out = []
     for sym, name in symbols:
         row = by_req.get(sym)
-        if row:
+        if row and row.get("price") is not None:
             out.append(row)
         else:
             out.append({
@@ -159,6 +201,7 @@ def fetch_quotes(symbols: list[tuple[str, str]]) -> list[dict]:
                 "ema5": None,
                 "ema10": None,
                 "ema20": None,
+                "error": (row or {}).get("error") or "TradingView 与 Yahoo 均无报价",
             })
     return out
 

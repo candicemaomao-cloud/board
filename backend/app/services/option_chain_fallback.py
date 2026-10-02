@@ -26,6 +26,21 @@ def fetch_cboe_chain(symbol):
     return payload
 
 
+def cboe_expirations(payload, symbol):
+    """Return sorted ISO expiry dates present in a Cboe delayed snapshot."""
+    data = (payload or {}).get('data') or {}
+    if str(data.get('symbol') or '').upper() != str(symbol or '').upper():
+        raise ValueError('备用期权链股票代码不匹配')
+    expirations = set()
+    for row in data.get('options', []):
+        match = re.fullmatch(r'(.+?)(\d{6})[CP](\d{8})', row.get('option', ''))
+        if match and match[1].upper() == str(symbol).upper():
+            expirations.add(datetime.strptime(match[2], '%y%m%d').date().isoformat())
+    if not expirations:
+        raise ValueError('备用期权链没有可用到期日')
+    return sorted(expirations)
+
+
 def cboe_expiry(payload, symbol, expiration):
     """Keep one source for spot, quotes, IV and OI; never mix expiry dates."""
     import pandas as pd

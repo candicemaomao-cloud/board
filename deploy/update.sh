@@ -40,5 +40,41 @@ NODE_OPTIONS=--max-old-space-size=2048 npm run build
 sudo rm -rf /var/www/board/*
 sudo cp -r dist/* /var/www/board/
 
+echo "==> 构建手机端"
+cd "$REPO_DIR/mobile-web"
+npm ci || npm install
+NODE_OPTIONS=--max-old-space-size=2048 VITE_BASE=/m/ npm run build
+sudo mkdir -p /var/www/board-mobile
+sudo rm -rf /var/www/board-mobile/*
+sudo cp -r dist/* /var/www/board-mobile/
+
+# 确保 nginx 有 /m/ 路由（幂等追加）
+if [ -f /etc/nginx/sites-available/board ] && ! grep -q 'location /m/' /etc/nginx/sites-available/board; then
+  echo "==> 写入 nginx /m/ 手机端路由"
+  sudo python3 - <<'PY'
+from pathlib import Path
+path = Path('/etc/nginx/sites-available/board')
+text = path.read_text()
+snippet = '''
+    location /m/ {
+        alias /var/www/board-mobile/;
+        try_files $uri $uri/ @mobile_spa;
+    }
+    location @mobile_spa {
+        rewrite ^ /m/index.html last;
+    }
+    location = /m/index.html {
+        alias /var/www/board-mobile/index.html;
+    }
+'''
+marker = '    location / {'
+if 'location /m/' not in text and marker in text:
+    text = text.replace(marker, snippet + '\n' + marker, 1)
+    path.write_text(text)
+PY
+  sudo nginx -t && sudo systemctl reload nginx
+fi
+
 sudo systemctl restart board-backend board-agent
 echo "更新完成"
+echo "桌面端: /   手机端: /m/"

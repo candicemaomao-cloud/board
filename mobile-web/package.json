@@ -1,0 +1,31 @@
+{
+  "name": "pnl-mobile-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "dev": "sh scripts/run-node.sh node scripts/dev.mjs",
+    "dev:web": "sh scripts/run-node.sh vite --host 0.0.0.0",
+    "build": "sh scripts/run-node.sh sh -c 'rm -f vite.config.js vite.config.d.ts && tsc -b && vite build'",
+    "preview": "sh scripts/run-node.sh vite preview"
+  },
+  "dependencies": {
+    "@pnl/api-client": "file:../packages/api-client",
+    "@tanstack/react-query": "^5.90.2",
+    "antd-mobile": "^5.43.0",
+    "lucide-react": "^0.468.0",
+    "react": "18.3.1",
+    "react-dom": "18.3.1",
+    "react-router-dom": "^7.9.4"
+  },
+  "devDependencies": {
+    "@types/react": "18.3.12",
+    "@types/react-dom": "18.3.1",
+    "@vitejs/plugin-react": "^5.0.4",
+    "typescript": "^5.9.3",
+    "vite": "^7.1.7"
+  }
+}

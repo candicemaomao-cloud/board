@@ -1521,50 +1521,66 @@ def analyze_option_chain(
     warnings: list[str] = []
     source = 'yahooquery'
     source_asof = None
-    yq = YQTicker(ticker_symbol)
+    yahoo_error = None
+    try:
+        yq = YQTicker(ticker_symbol)
+        price_info = yq.price
+        if not isinstance(price_info, dict) or ticker_symbol not in price_info:
+            raise ValueError(f"现价接口返回：{price_info}")
+        spot_info = price_info[ticker_symbol]
+        if not isinstance(spot_info, dict):
+            raise ValueError(f"现价接口返回：{spot_info}")
+        spot = spot_info.get("regularMarketPrice") or spot_info.get("postMarketPrice")
+        if not spot:
+            raise ValueError("现价字段为空")
+        spot = float(spot)
 
-    price_info = yq.price
-    if not isinstance(price_info, dict) or ticker_symbol not in price_info:
-        raise ValueError(f"拿不到 {ticker_symbol} 的现价，数据源返回：{price_info}")
-    spot_info = price_info[ticker_symbol]
-    spot = spot_info.get("regularMarketPrice") or spot_info.get("postMarketPrice")
-    if not spot:
-        raise ValueError(f"{ticker_symbol} 现价字段为空")
-    spot = float(spot)
-
-    chain = yq.option_chain
-    if not isinstance(chain, pd.DataFrame) or chain.empty:
-        raise ValueError(f"未找到 {ticker_symbol} 的期权链数据（可能不是可交易期权的标的）")
-
-    chain = chain.reset_index()
-    exp_col = "expiration" if "expiration" in chain.columns else "expiration_date"
-    type_col = "optionType" if "optionType" in chain.columns else "option_type"
-
-    all_expirations = sorted(chain[exp_col].unique())
-    if not all_expirations:
-        raise ValueError(f"{ticker_symbol} 没有可用的期权到期日")
-    expirations_str = [pd.Timestamp(e).strftime("%Y-%m-%d") for e in all_expirations]
-
-    exp_date = all_expirations[0]
-    if expiration:
-        matched = [e for e in all_expirations if pd.Timestamp(e).strftime("%Y-%m-%d") == expiration]
-        if matched:
-            exp_date = matched[0]
-        else:
-            warnings.append(f"传入的到期日 {expiration} 不在可选范围内，已改用最近到期日")
-
-    exp_chain = chain[chain[exp_col] == exp_date]
-    calls = exp_chain[exp_chain[type_col] == "calls"].reset_index(drop=True).copy()
-    puts = exp_chain[exp_chain[type_col] == "puts"].reset_index(drop=True).copy()
-    if calls.empty or puts.empty:
-        raise ValueError(f"最近到期日的 Call/Put 数据不完整（Call {len(calls)} 条, Put {len(puts)} 条）")
-
-    exp_timestamp = pd.Timestamp(exp_date)
-    exp_date_str = exp_timestamp.strftime("%Y-%m-%d")
+        chain = yq.option_chain
+        if not isinstance(chain, pd.DataFrame) or chain.empty:
+            raise ValueError("期权链接口为空")
+        chain = chain.reset_index()
+        exp_col = "expiration" if "expiration" in chain.columns else "expiration_date"
+        type_col = "optionType" if "optionType" in chain.columns else "option_type"
+        all_expirations = sorted(chain[exp_col].unique())
+        if not all_expirations:
+            raise ValueError("没有可用的期权到期日")
+        expirations_str = [pd.Timestamp(e).strftime("%Y-%m-%d") for e in all_expirations]
+        exp_date = all_expirations[0]
+        if expiration:
+            matched = [e for e in all_expirations if pd.Timestamp(e).strftime("%Y-%m-%d") == expiration]
+            if matched:
+                exp_date = matched[0]
+            else:
+                warnings.append(f"传入的到期日 {expiration} 不在可选范围内，已改用最近到期日")
+        exp_chain = chain[chain[exp_col] == exp_date]
+        calls = exp_chain[exp_chain[type_col] == "calls"].reset_index(drop=True).copy()
+        puts = exp_chain[exp_chain[type_col] == "puts"].reset_index(drop=True).copy()
+        if calls.empty or puts.empty:
+            raise ValueError(f"最近到期日 Call/Put 不完整（Call {len(calls)} 条, Put {len(puts)} 条）")
+        exp_timestamp = pd.Timestamp(exp_date)
+        exp_date_str = exp_timestamp.strftime("%Y-%m-%d")
+    except Exception as exc:
+        yahoo_error = str(exc)
+        try:
+            from app.services.option_chain_fallback import fetch_cboe_chain, cboe_expirations, cboe_expiry
+            cboe_payload = fetch_cboe_chain(ticker_symbol)
+            expirations_str = cboe_expirations(cboe_payload, ticker_symbol)
+            exp_date_str = expiration if expiration in expirations_str else expirations_str[0]
+            if expiration and expiration not in expirations_str:
+                warnings.append(f"传入的到期日 {expiration} 不在备用源范围内，已改用最近到期日")
+            calls, puts, spot, source_asof = cboe_expiry(cboe_payload, ticker_symbol, exp_date_str)
+            exp_timestamp = pd.Timestamp(exp_date_str)
+            source = 'Cboe delayed'
+            warnings.append(f"Yahoo 数据暂不可用，已自动切换到 Cboe 延迟期权链（{yahoo_error}）。")
+        except Exception as fallback_exc:
+            raise ValueError(
+                f"拿不到 {ticker_symbol} 的期权数据；Yahoo：{yahoo_error}；"
+                f"Cboe 备用源：{fallback_exc}"
+            ) from fallback_exc
     # Yahoo may return an otherwise complete chain with zero OI for every contract.
     # Replace the entire selected expiry (including spot) rather than mixing providers.
     yahoo_oi = sum(pd.to_numeric(frame.get('openInterest', pd.Series(dtype=float)), errors='coerce').fillna(0).sum() for frame in (calls, puts))
-    if yahoo_oi < 10:
+    if source == 'yahooquery' and yahoo_oi < 10:
         try:
             from app.services.option_chain_fallback import fetch_cboe_chain, cboe_expiry
             calls, puts, spot, source_asof = cboe_expiry(fetch_cboe_chain(ticker_symbol), ticker_symbol, exp_date_str)

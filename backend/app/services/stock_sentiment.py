@@ -639,9 +639,12 @@ def _yahoo_options_client() -> tuple[httpx.Client, str]:
     try:
         client.get("https://fc.yahoo.com")
         crumb_res = client.get("https://query1.finance.yahoo.com/v1/test/getcrumb")
-        if crumb_res.status_code >= 400 or not crumb_res.text.strip() or "Too Many" in crumb_res.text:
+        body = (crumb_res.text or "").strip()
+        if crumb_res.status_code == 429 or "Too Many" in body:
+            raise RuntimeError("Yahoo 限流 429（本地代理出口 IP 被限制，请切换 Clash 节点后点刷新）")
+        if crumb_res.status_code >= 400 or not body:
             raise RuntimeError(f"Yahoo crumb 失败 {crumb_res.status_code}")
-        crumb = crumb_res.text.strip()
+        crumb = body
     except Exception:
         client.close()
         raise
@@ -654,6 +657,16 @@ def _yahoo_options_client() -> tuple[httpx.Client, str]:
     return client, crumb
 
 
+def _reset_yahoo_options_client():
+    global _yahoo_crumb
+    if _yahoo_crumb:
+        try:
+            _yahoo_crumb[2].close()
+        except Exception:
+            pass
+    _yahoo_crumb = None
+
+
 def _yahoo_option_chain(symbol: str) -> dict:
     client, crumb = _yahoo_options_client()
     res = client.get(
@@ -661,21 +674,15 @@ def _yahoo_option_chain(symbol: str) -> dict:
         params={"crumb": crumb},
     )
     if res.status_code == 401:
-        # crumb expired — force refresh once
-        global _yahoo_crumb
-        if _yahoo_crumb:
-            try:
-                _yahoo_crumb[2].close()
-            except Exception:
-                pass
-        _yahoo_crumb = None
+        _reset_yahoo_options_client()
         client, crumb = _yahoo_options_client()
         res = client.get(
             f"https://query1.finance.yahoo.com/v7/finance/options/{symbol}",
             params={"crumb": crumb},
         )
     if res.status_code == 429:
-        raise RuntimeError("Yahoo 期权限流，请稍后再试")
+        _reset_yahoo_options_client()
+        raise RuntimeError("Yahoo 限流 429（本地代理出口 IP 被限制，请切换 Clash 节点后点刷新）")
     if res.status_code >= 400:
         raise RuntimeError(f"Yahoo 期权错误 {res.status_code}")
     payload = res.json() if res.headers.get("content-type", "").startswith("application/json") else {}
@@ -700,7 +707,7 @@ def _nearest_by_strike(rows: list[dict], target: float) -> dict | None:
 
 
 def _option_pulses(symbols: list[str]) -> dict[str, dict]:
-    """近月期权链快照：成交量 Put/Call、OTM skew、简化 GEX。缓存 10 分钟。"""
+    """近月期权链快照：成交量 Put/Call、OTM skew、简化 GEX。成功缓存 10 分钟，失败只缓存 45 秒。"""
     from app.user_stocks.options import BSInputs, bs_greeks
 
     syms = [s.strip().upper() for s in symbols if s and str(s).strip()]
@@ -789,12 +796,108 @@ def _option_pulses(symbols: list[str]) -> dict[str, dict]:
                     "skew_pct": None if skew_pct is None else round(skew_pct, 4),
                     "gex": round(gex, 0) if gex_n else None,
                     "gex_strikes": gex_n,
+                    "source": "Yahoo Finance",
                 }
             except Exception as exc:  # noqa: BLE001
-                out[sym] = {"error": str(exc)[:120]}
+                out[sym] = {"error": str(exc)[:160]}
+                # Stop early on rate limit so we don't burn the remaining quota.
+                if "429" in str(exc):
+                    for left in syms:
+                        if left not in out:
+                            out[left] = {"error": str(exc)[:160]}
+                    break
         return out
 
-    return _cached(key, 600, fetch)
+    hit = _cache.get(key)
+    now = time.time()
+    if hit:
+        age = now - hit[0]
+        value = hit[1]
+        ok = isinstance(value, dict) and any(not (row or {}).get("error") for row in value.values())
+        ttl = 600 if ok else 45
+        if age < ttl:
+            return value
+    value = fetch()
+    _cache[key] = (now, value)
+    return value
+
+
+def _nasdaq_number(value) -> float:
+    try:
+        return float(str(value).replace(',', '').replace('$', '').strip())
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _parse_nasdaq_option_chain(payload: dict, symbol: str) -> dict:
+    """Parse Nasdaq's nearest-expiry option table for volume/OI Put/Call metrics."""
+    data = (payload or {}).get('data') or {}
+    rows = ((data.get('table') or {}).get('rows') or [])
+    expiry = None
+    call_vol = put_vol = call_oi = put_oi = 0.0
+    option_rows = 0
+    for row in rows:
+        group = row.get('expirygroup')
+        if group:
+            if expiry is not None:
+                break
+            expiry = str(group).strip()
+            continue
+        if expiry is None or row.get('strike') in (None, '', '--'):
+            continue
+        call_vol += _nasdaq_number(row.get('c_Volume'))
+        put_vol += _nasdaq_number(row.get('p_Volume'))
+        call_oi += _nasdaq_number(row.get('c_Openinterest'))
+        put_oi += _nasdaq_number(row.get('p_Openinterest'))
+        option_rows += 1
+    if not option_rows:
+        raise RuntimeError('Nasdaq 无期权链')
+    if call_vol <= 0 and put_vol <= 0 and call_oi <= 0 and put_oi <= 0:
+        raise RuntimeError('Nasdaq 期权成交与持仓暂不可用')
+    pcr_vol = put_vol / call_vol if call_vol > 0 else None
+    pcr_oi = put_oi / call_oi if call_oi > 0 else None
+    last_trade = str(data.get('lastTrade') or '')
+    import re
+    match = re.search(r'\$([\d,.]+)', last_trade)
+    return {
+        'symbol': symbol, 'spot': _nasdaq_number(match.group(1)) if match else None,
+        'expiration': expiry, 'call_vol': round(call_vol), 'put_vol': round(put_vol),
+        'call_oi': round(call_oi), 'put_oi': round(put_oi),
+        'pcr_vol': None if pcr_vol is None else round(pcr_vol, 3),
+        'pcr_oi': None if pcr_oi is None else round(pcr_oi, 3),
+        'put_iv_otm': None, 'call_iv_otm': None, 'skew_pct': None,
+        'gex': None, 'gex_strikes': 0, 'source': 'Nasdaq',
+    }
+
+
+def _nasdaq_option_pulses(symbols: list[str]) -> dict[str, dict]:
+    """Fallback for Yahoo 429. Nasdaq supplies delayed volume/OI, but not IV/Gamma."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    syms = [s.strip().upper() for s in symbols if s and str(s).strip()]
+    key = 'opt-pulse-nasdaq-v1:' + ','.join(syms)
+    hit = _cache.get(key)
+    now = time.time()
+    if hit and now - hit[0] < 600:
+        return hit[1]
+
+    def fetch(sym):
+        headers = {**HEADERS, 'Origin': 'https://www.nasdaq.com', 'Referer': 'https://www.nasdaq.com/'}
+        try:
+            response = httpx.get(
+                f'https://api.nasdaq.com/api/quote/{sym}/option-chain',
+                params={'assetclass': 'etf', 'limit': 500}, headers=headers,
+                timeout=25.0, follow_redirects=True,
+            )
+            response.raise_for_status()
+            return sym, _parse_nasdaq_option_chain(response.json(), sym)
+        except Exception as exc:  # noqa: BLE001
+            return sym, {'error': f'Nasdaq：{str(exc)[:130]}'}
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        out = dict(pool.map(fetch, syms))
+    _cache[key] = (now, out)
+    return out
 
 
 def _derivative_cards(*, asof_d: date) -> list[dict]:
@@ -894,8 +997,18 @@ def _derivative_cards(*, asof_d: date) -> list[dict]:
         if not (pulses.get("SPY") or {}).get("error"):
             sector_pulses = _option_pulses(sectors)
             pulses.update(sector_pulses)
+        # Yahoo frequently rate-limits a whole exit IP. Nasdaq's delayed chain still
+        # supplies the volume/OI needed by the sector Put/Call card, so fill only
+        # missing sector rows from there. It intentionally does not stand in for IV/GEX.
+        missing_sectors = [s for s in sectors if (pulses.get(s) or {}).get('pcr_vol') is None]
+        if missing_sectors:
+            pulses.update(_nasdaq_option_pulses(missing_sectors))
     except Exception:  # noqa: BLE001
-        pulses = {}
+        try:
+            spy_error = pulses.get('SPY') or {'error': 'Yahoo 期权链暂不可用'}
+            pulses = {'SPY': spy_error, **_nasdaq_option_pulses(sectors)}
+        except Exception:  # noqa: BLE001
+            pulses = {}
 
     spy = pulses.get("SPY") or {}
     skew = spy.get("skew_pct")
@@ -991,6 +1104,7 @@ def _derivative_cards(*, asof_d: date) -> list[dict]:
                 "skew": p.get("skew_pct"),
                 "tone": band.get("tone"),
                 "label": band.get("label"),
+                "source": p.get("source") or "Yahoo Finance",
             }
         )
     sector_rows.sort(key=lambda r: r["pcr"])
@@ -1005,13 +1119,14 @@ def _derivative_cards(*, asof_d: date) -> list[dict]:
                 delta_display=None,
                 fear=None,
                 band=_pack_band("neutral", "—", 0),
-                hint=f"行业 ETF 期权链暂不可用{live_tag}",
+                hint=f"行业 ETF 期权链暂不可用{('：' + ((pulses.get('SPY') or {}).get('error') or '')) if (pulses.get('SPY') or {}).get('error') else ''}{live_tag}",
             )
         )
     else:
         hot = sector_rows[0]  # 最低 PCR = call 相对更热
         cold = sector_rows[-1]
         avg_pcr = sum(r["pcr"] for r in sector_rows) / len(sector_rows)
+        option_sources = " / ".join(sorted({r.get('source') for r in sector_rows if r.get('source')}))
         card = _card(
             key="sector_opt",
             title="板块期权 · Put/Call",
@@ -1024,6 +1139,7 @@ def _derivative_cards(*, asof_d: date) -> list[dict]:
             hint=(
                 f"近月成交量拆分：绿=Call、红=Put；条越偏绿越偏多头押注。"
                 f"Call 最热 {hot['symbol']}（{hot['pcr']:.2f}），对冲最重 {cold['symbol']}（{cold['pcr']:.2f}）。"
+                f"数据源 {option_sources or '—'}；"
                 f"{live_tag}"
             ),
         )
@@ -1291,4 +1407,3 @@ def fear_panel(*, asof: str | None = None) -> dict:
             "sector_opt": "行业 ETF 近月期权链（Yahoo）",
         },
     }
-

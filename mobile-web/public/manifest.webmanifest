@@ -1,0 +1,10 @@
+{
+  "name": "P&L Board Mobile",
+  "short_name": "P&L Board",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#071019",
+  "theme_color": "#071019",
+  "lang": "zh-CN",
+  "icons": [{ "src": "/app-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
