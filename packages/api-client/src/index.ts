@@ -77,6 +77,7 @@ export type Position = {
   status: '未开始' | '开始' | '已结束'
   name: string
   quote_symbol?: string
+  quote_source?: string
   shares: number
   open_price: number
   market_value: number
@@ -89,9 +90,20 @@ export type Position = {
   holding_days: number
   pnl_amount: number
   pnl_pct?: number | null
+  strategy_id?: number | null
   strategy_name?: string | null
+  strategy_side?: 'long' | 'short' | null
   open_reason?: string | null
   close_reason?: string | null
+  notes?: string | null
+}
+
+export type StrategyPlan = {
+  id: number
+  name: string
+  side: 'long' | 'short' | string
+  timeframe?: string
+  source?: string | null
   notes?: string | null
 }
 
@@ -190,7 +202,16 @@ export function createApiClient({ baseUrl = '', tokenStore, onUnauthorized }: Cl
     trades: () => request<Trade[]>('/api/trades'),
     positions: (platform?: string) => request<Position[]>(`/api/positions${query({ platform })}`),
     createPosition: (body: unknown) => request<Position>('/api/positions', { method: 'POST', body: JSON.stringify(body) }),
+    updatePosition: (id: number, body: unknown) => request<Position>(`/api/positions/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
     deletePosition: (id: number) => request<void>(`/api/positions/${id}`, { method: 'DELETE' }),
+    strategyPlans: () => request<StrategyPlan[]>('/api/strategy/plans'),
+    createStrategyPlan: (body: unknown) => request<StrategyPlan>('/api/strategy/plans', { method: 'POST', body: JSON.stringify(body) }),
+    quotes: (items: Array<{ symbol: string; name?: string | null; source?: string | null }>) =>
+      request<{ quotes: Array<{ symbol?: string; requested?: string; name?: string; price?: number | null; day_pct?: number | null; session?: string; session_label?: string; source?: string }>; market?: { label?: string; live?: boolean; key?: string; next_open?: number } }>(
+        '/api/market/quotes', { method: 'POST', body: JSON.stringify({ items }) },
+      ),
+    stockEntryAnalysis: (id: number, body: unknown) => request<any>(`/api/daily-watch/${id}/entry-analysis`, { method: 'POST', body: JSON.stringify(body) }),
+    stockEntryAnalysisBySymbol: (symbol: string, body: unknown) => request<any>(`/api/daily-watch/symbol/${encodeURIComponent(symbol)}/entry-analysis`, { method: 'POST', body: JSON.stringify(body) }),
     plans: (kind?: string) => request<{ items: TradePlan[] }>(`/api/plans${query({ kind })}`),
     createPlan: (body: unknown) => request<TradePlan>('/api/plans', { method: 'POST', body: JSON.stringify(body) }),
     deletePlan: (id: number) => request<void>(`/api/plans/${id}`, { method: 'DELETE' }),

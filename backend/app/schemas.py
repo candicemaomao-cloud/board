@@ -152,6 +152,7 @@ class PositionOut(BaseModel):
     close_reason: str | None = None
     strategy_id: int | None = None
     strategy_name: str | None = None
+    strategy_side: str | None = None
     trade_id: int | None = None
     holding_days: int
     pnl_amount: float

@@ -6,6 +6,7 @@ import time
 
 import httpx
 
+from app.http_outbound import http_client
 from app.services.binance import normalize_symbol
 from app.services.crypto_market import CryptoMarketError, _cached, _http_get
 
@@ -46,7 +47,7 @@ def fear_greed(limit: int = 30) -> dict:
 
     def fetch():
         try:
-            with httpx.Client(timeout=15.0, headers=HEADERS, trust_env=False) as client:
+            with http_client(timeout=15.0, headers=HEADERS) as client:
                 res = client.get(FNG_URL, params={"limit": limit, "format": "json"})
             data = res.json()
         except Exception as exc:  # noqa: BLE001

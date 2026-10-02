@@ -9,6 +9,7 @@ from email.utils import parsedate_to_datetime
 
 import httpx
 
+from app.http_outbound import http_client
 from app.services.crypto_market import CryptoMarketError, _cached
 from app.services.translate import translate_items, translate_source
 
@@ -143,7 +144,7 @@ def fetch_news(limit: int = 40) -> dict:
     def fetch():
         collected: list[dict] = []
         errors = []
-        with httpx.Client(timeout=15.0, headers=HEADERS, trust_env=False, follow_redirects=True) as client:
+        with http_client(timeout=15.0, headers=HEADERS, follow_redirects=True) as client:
             for name, url in FEEDS:
                 try:
                     res = client.get(url)

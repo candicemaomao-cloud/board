@@ -1,9 +1,9 @@
 import { createContext, useContext, useEffect, useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Navigate, NavLink, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
-import { Activity, ArrowLeft, BarChart3, Bell, Bitcoin, BookOpenText, CalendarDays, CandlestickChart, ChevronDown, ChevronRight, ChevronUp, CircleDollarSign, Gauge, Home, ListFilter, ListTree, LogOut, Newspaper, Plus, Radio, ReceiptText, RefreshCw, ScrollText, Trash2, UserRound, WalletCards, X } from 'lucide-react'
+import { Activity, ArrowLeft, BarChart3, Bell, Bitcoin, BookOpenText, CalendarDays, CandlestickChart, ChevronDown, ChevronRight, ChevronUp, CircleDollarSign, Gauge, Home, ListFilter, ListTree, LogOut, Newspaper, Pencil, Plus, ReceiptText, RefreshCw, ScrollText, Trash2, UserRound, WalletCards, X } from 'lucide-react'
 import { Button, Form, Input, SearchBar, TabBar, Toast } from 'antd-mobile'
-import type { CryptoCoin, CryptoCustomStrategy, CryptoKline, CryptoStrategy, DailyWatch, HomeMessage, MarketQuote, Position, ScreenRow, StockJournal, StockScreenPreset, SystemRecipient, Trade, TradePlan, User } from '@pnl/api-client'
+import type { CryptoCoin, CryptoCustomStrategy, CryptoKline, CryptoStrategy, DailyWatch, HomeMessage, MarketQuote, Position, ScreenRow, StockJournal, StockScreenPreset, StrategyPlan, SystemRecipient, Trade, TradePlan, User } from '@pnl/api-client'
 import { api, tokenStore } from './main'
 
 const USER_KEY = 'pnl_mobile_user'
@@ -64,6 +64,93 @@ function QueryState({ loading, error, retry }: { loading: boolean; error: unknow
   return null
 }
 const money = (value?: number | null) => value == null ? '—' : `$${Number(value).toLocaleString('en-US', { maximumFractionDigits: 2 })}`
+const CRYPTO_PLATFORMS = new Set(['币安', 'OKX'])
+const isCryptoPlatform = (platform?: string | null) => CRYPTO_PLATFORMS.has(String(platform || '').trim())
+
+type QuoteMap = Record<string, { price?: number | null; symbol?: string; day_pct?: number | null; session?: string; session_label?: string }>
+
+function compactSymbol(raw?: string | null) {
+  return String(raw || '').replace(/[^A-Za-z0-9.]/g, '').toUpperCase()
+}
+
+function positionQuoteItem(row: Position) {
+  const compact = compactSymbol(row.quote_symbol || row.name)
+  if (!compact) return null
+  if (row.quote_symbol && row.quote_source) {
+    return { symbol: compactSymbol(row.quote_symbol), name: row.name, source: row.quote_source }
+  }
+  if (isCryptoPlatform(row.platform) || compact.endsWith('USDT') || compact.endsWith('USDC')) {
+    const symbol = compact.endsWith('USDT') || compact.endsWith('USDC') ? compact : `${compact}USDT`
+    return { symbol, name: row.name, source: 'binance' }
+  }
+  return { symbol: compact, name: row.name, source: 'tradingview' }
+}
+
+function usePositionQuotes(rows: Position[]) {
+  const items = rows.filter(row => row.status === '开始').map(positionQuoteItem).filter(Boolean) as Array<{ symbol: string; name: string; source: string }>
+  const key = items.map(item => `${item.source}:${item.symbol}`).sort().join('|')
+  const query = useQuery({
+    queryKey: ['position-quotes', key],
+    queryFn: () => api.quotes(items),
+    enabled: items.length > 0,
+    refetchInterval: 30_000,
+    staleTime: 15_000,
+  })
+  const quotes: QuoteMap = {}
+  const remember = (map: QuoteMap, keyName?: string | null, quote?: { price?: number | null; symbol?: string }) => {
+    if (!keyName || !quote) return
+    map[String(keyName).toUpperCase()] = quote
+  }
+  ;(query.data?.quotes || []).forEach((quote, index) => {
+    const item = items[index]
+    remember(quotes, quote.symbol, quote)
+    remember(quotes, quote.requested, quote)
+    remember(quotes, quote.name, quote)
+    if (item) {
+      remember(quotes, item.symbol, quote)
+      remember(quotes, `${item.source}:${item.symbol}`, quote)
+    }
+  })
+  return quotes
+}
+
+function liveQuote(row: Position, quotes: QuoteMap) {
+  const item = positionQuoteItem(row)
+  if (!item) return null
+  return quotes[`${item.source}:${item.symbol}`.toUpperCase()]
+    || quotes[item.symbol.toUpperCase()]
+    || quotes[compactSymbol(row.name)]
+    || quotes[compactSymbol(row.quote_symbol)]
+    || null
+}
+
+function livePrice(row: Position, quotes: QuoteMap) {
+  const price = liveQuote(row, quotes)?.price
+  return price == null ? null : Number(price)
+}
+
+function livePnl(row: Position, quotes: QuoteMap) {
+  if (row.status === '已结束') {
+    return {
+      amount: Number(row.pnl_amount || 0),
+      percent: row.pnl_pct == null ? null : Number(row.pnl_pct) * 100,
+      price: null as number | null,
+    }
+  }
+  const px = livePrice(row, quotes)
+  const open = Number(row.open_price || 0)
+  const shares = Number(row.shares || 0)
+  const openAmount = Number(row.open_amount || 0)
+  const fee = Number(row.fee || 0)
+  if (px == null || !(shares > 0)) {
+    return { amount: Number(row.pnl_amount || 0), percent: row.pnl_pct == null ? null : Number(row.pnl_pct) * 100, price: null as number | null }
+  }
+  const value = px * shares
+  const short = row.strategy_side === 'short'
+  const amount = short ? openAmount - value - fee : value - openAmount - fee
+  const percent = open > 0 ? (short ? (open - px) / open : (px - open) / open) * 100 : null
+  return { amount, percent, price: px }
+}
 const compact = (value?: number | null) => {
   if (value == null) return '—'; const abs = Math.abs(value)
   return abs >= 1e12 ? `$${(value / 1e12).toFixed(1)}T` : abs >= 1e9 ? `$${(value / 1e9).toFixed(1)}B` : money(value)
@@ -199,20 +286,56 @@ function StockHubPage() {
   const watches = useQuery({ queryKey: ['watches'], queryFn: api.dailyWatches })
   const positions = useQuery({ queryKey: ['positions'], queryFn: () => api.positions() })
   const panel = fear.data as any
-  const stockPositions = (positions.data || []).filter(row => row.platform !== '币安' && row.status === '开始')
+  const stockPositions = (positions.data || []).filter(row => !isCryptoPlatform(row.platform) && row.status === '开始')
+  const quotes = usePositionQuotes(stockPositions)
+  const derivMainCards = ((panel?.derivative_cards || []) as any[]).filter(c => c.layout !== 'sector_bars')
+  const derivSectorCards = ((panel?.derivative_cards || []) as any[]).filter(c => c.layout === 'sector_bars')
   return <><PageHead title="股票" subtitle="市场情绪、筛选与实时研究"/>
     <section className="fear-summary"><div><span className="fear-icon"><Activity size={20}/></span><div><p>市场情绪</p><h2>{panel?.composite_label || '读取中'}</h2><small>六项指标等权综合</small></div></div><strong>{panel?.composite ?? '—'}</strong></section>
     <QueryState loading={fear.isLoading} error={fear.error} retry={() => fear.refetch()}/>
     {panel?.cards?.length > 0 && <><div className="stock-section-head"><h2>恐慌指标</h2><span>更新 {panel.updated_at || '—'}</span></div><div className="fear-grid">{panel.cards.map((card: any) => <article key={card.key} className={`fear-metric tone-${card.tone || 'neutral'}`}><div><span>{card.title}</span><small>{card.label}</small></div><strong>{card.display}</strong><em className={(card.delta || 0) > 0 ? 'negative' : (card.delta || 0) < 0 ? 'positive' : ''}>{card.delta_display || '—'}</em><i style={{ width: `${Math.max(0, Math.min(100, Number(card.bar) || 0))}%` }}/></article>)}</div></>}
+    {(derivMainCards.length > 0 || derivSectorCards.length > 0) && <>
+      <div className="stock-section-head"><h2>衍生品三层</h2><span>不计入上方等权</span></div>
+      {derivMainCards.length > 0 && <div className="fear-grid fear-deriv-grid">{derivMainCards.map((card: any) => <article key={card.key} className={`fear-metric tone-${card.tone || 'neutral'}`}><div><span>{card.title}</span><small>{card.label}</small></div><strong>{card.display}</strong><em className={(card.delta || 0) > 0 ? 'negative' : (card.delta || 0) < 0 ? 'positive' : ''}>{card.delta_display || '—'}</em><i style={{ width: `${Math.max(0, Math.min(100, Number(card.bar) || 0))}%` }}/></article>)}</div>}
+      {derivSectorCards.map((card: any) => <SectorOptionsCard key={card.key} card={card}/>)}
+    </>}
     <SectionTitle title="股票列表" action="查看全部" to="/stocks/list"/>
     <QueryState loading={watches.isLoading} error={watches.error} retry={() => watches.refetch()}/>
     <div className="stock-hub-preview">{(watches.data || []).slice(0, 3).map(row => <StockRow key={row.id} row={row}/>)}</div>
     <SectionTitle title="股票持仓" action="查看全部" to="/stocks/positions"/>
     <QueryState loading={positions.isLoading} error={positions.error} retry={() => positions.refetch()}/>
-    <div className="asset-position-preview">{stockPositions.slice(0, 2).map(row => <PositionRow key={row.id} row={row}/>)}{positions.data && stockPositions.length === 0 && <div className="empty-card">暂无股票持仓</div>}</div>
+    <div className="asset-position-preview">{stockPositions.slice(0, 2).map(row => <PositionRow key={row.id} row={row} quotes={quotes}/>)}{positions.data && stockPositions.length === 0 && <div className="empty-card">暂无股票持仓</div>}</div>
     <div className="stock-section-head submenu-title"><h2>股票工具</h2></div>
-    <nav className="stock-tool-menu"><StockToolLink to="/stocks/list" icon={<ListTree/>} title="股票列表" detail="查看全部关注股票与研究详情"/><StockToolLink to="/stocks/screen" icon={<ListFilter/>} title="股票筛选" detail="按财务、估值和价格趋势寻找股票"/><StockToolLink to="/stocks/live" icon={<Radio/>} title="实时监听" detail="查看关注股票的最新价格与方向"/><StockToolLink to="/stocks/journal" icon={<BookOpenText/>} title="股票日志" detail="查看每日市场判断与分析记录"/><StockToolLink to="/stocks/news" icon={<Newspaper/>} title="新闻" detail="浏览最新市场与个股相关新闻"/></nav>
+    <nav className="stock-tool-menu"><StockToolLink to="/stocks/list" icon={<ListTree/>} title="股票列表" detail="关注列表 + 开盘日实时行情与盘前盘中盘后时段"/><StockToolLink to="/stocks/screen" icon={<ListFilter/>} title="股票筛选" detail="按财务、估值和价格趋势寻找股票"/><StockToolLink to="/stocks/journal" icon={<BookOpenText/>} title="股票日志" detail="查看每日市场判断与分析记录"/><StockToolLink to="/stocks/news" icon={<Newspaper/>} title="新闻" detail="浏览最新市场与个股相关新闻"/></nav>
   </>
+}
+
+function SectorOptionsCard({ card }: { card: any }) {
+  const rows = card.rows || []
+  return <article className={`sector-opt-card tone-${card.tone || 'neutral'}`}>
+    <header>
+      <div><b>{card.title}</b><small>{card.label} · {card.display}</small></div>
+    </header>
+    <div className="sector-legend"><span className="leg call">Call 看涨</span><span className="leg put">Put 看跌</span><span className="sub">条长=成交量占比 · 右侧 Put/Call</span></div>
+    <div className="sector-rows">{rows.map((row: any) => {
+      const callShare = Number(row.call_share) || 0
+      const putShare = Number(row.put_share) || 0
+      const pcr = row.pcr == null ? '—' : Number(row.pcr).toFixed(2)
+      return <div key={row.symbol} className="sector-row">
+        <div className="sector-meta"><span className="sym">{row.symbol}</span><span className="name">{row.name}</span></div>
+        <div className="sector-bar-track" title={`Call ${row.call_share ?? '—'}% · Put ${row.put_share ?? '—'}%`}>
+          <div className="sector-bar call" style={{ width: `${callShare}%` }}/>
+          <div className="sector-bar put" style={{ width: `${putShare}%` }}/>
+        </div>
+        <div className="sector-stats">
+          <span className="share call">C {row.call_share != null ? `${row.call_share}%` : '—'}</span>
+          <span className="share put">P {row.put_share != null ? `${row.put_share}%` : '—'}</span>
+          <span className={`pcr tone-${row.tone || 'neutral'}`}>{pcr}</span>
+        </div>
+      </div>
+    })}</div>
+    {card.hint && <p className="sector-hint">{card.hint}</p>}
+  </article>
 }
 
 function StockToolLink({ to, icon, title, detail }: { to: string; icon: React.ReactNode; title: string; detail: string }) {
@@ -220,8 +343,7 @@ function StockToolLink({ to, icon, title, detail }: { to: string; icon: React.Re
 }
 
 function StockLivePage() {
-  const query = useQuery({ queryKey: ['watches'], queryFn: api.dailyWatches, refetchInterval: 60_000 })
-  return <><SecondaryHeader title="实时监听" subtitle="每分钟自动刷新" fallback="/stocks"/><QueryState loading={query.isLoading} error={query.error} retry={() => query.refetch()}/><div className="stock-list">{(query.data || []).slice(0, 12).map(row => <StockRow key={row.id} row={row}/>)}</div></>
+  return <Navigate to="/stocks/list" replace />
 }
 
 function StockJournalPage() {
@@ -244,31 +366,68 @@ function StockNewsPage() {
   return <><SecondaryHeader title="股票新闻" subtitle="市场与个股最新动态" fallback="/stocks"/><QueryState loading={query.isLoading} error={query.error} retry={() => query.refetch()}/><div className="stock-news-list">{rows.map((item, index) => <a key={`${item.url}-${index}`} href={item.url} target="_blank" rel="noreferrer"><b>{item.title}</b><span>{[item.source, item.ago].filter(Boolean).join(' · ')}</span><ChevronRight size={17}/></a>)}{query.data && rows.length === 0 && <div className="empty-card">暂无新闻</div>}</div></>
 }
 
+function useWatchQuotes(rows: DailyWatch[]) {
+  const items = rows.map(row => {
+    const symbol = String(row.symbol || '').trim().toUpperCase()
+    if (!symbol) return null
+    return { symbol, name: symbol, source: 'tradingview' as const }
+  }).filter(Boolean) as Array<{ symbol: string; name: string; source: string }>
+  const key = items.map(item => item.symbol).sort().join('|')
+  const query = useQuery({
+    queryKey: ['watch-quotes', key],
+    queryFn: () => api.quotes(items),
+    enabled: items.length > 0,
+    refetchInterval: (current) => current.state.data?.market?.live ? 30_000 : false,
+    staleTime: 15_000,
+  })
+  const map: QuoteMap = {}
+  const remember = (target: QuoteMap, name?: string | null, quote?: { price?: number | null; symbol?: string; day_pct?: number | null; session?: string; session_label?: string }) => {
+    if (!name || !quote) return
+    target[String(name).toUpperCase()] = quote
+  }
+  ;(query.data?.quotes || []).forEach((quote, index) => {
+    const item = items[index]
+    remember(map, quote.symbol, quote)
+    remember(map, quote.requested, quote)
+    remember(map, quote.name, quote)
+    if (item) remember(map, item.symbol, quote)
+  })
+  return { quotes: map, market: query.data?.market || null, refetch: query.refetch, isFetching: query.isFetching }
+}
+
 function StocksPage() {
   const [search, setSearch] = useState('')
   const query = useQuery({ queryKey: ['watches'], queryFn: api.dailyWatches })
   const rows = useMemo(() => (query.data || []).filter(row => `${row.symbol} ${row.sector}`.toLowerCase().includes(search.toLowerCase())), [query.data, search])
-  return <><SecondaryHeader title="股票列表" subtitle={`${rows.length} 只股票`} fallback="/stocks"/><div className="search-box"><SearchBar value={search} onChange={setSearch} placeholder="搜索代码或行业" clearable/><button onClick={() => query.refetch()} aria-label="刷新"><RefreshCw size={17}/></button></div>
-    <QueryState loading={query.isLoading} error={query.error} retry={() => query.refetch()}/><div className="stock-list">{rows.map(row => <StockRow key={row.id} row={row}/>)}</div></>
+  const { quotes, market, refetch, isFetching } = useWatchQuotes(rows)
+  const sessionText = market?.label ? `美股${market.label}` : '行情'
+  const subtitle = market?.live ? `${rows.length} 只 · ${sessionText} · 约 30 秒刷新` : `${rows.length} 只 · ${sessionText}`
+  return <><SecondaryHeader title="股票列表" subtitle={subtitle} fallback="/stocks"/><div className="search-box"><SearchBar value={search} onChange={setSearch} placeholder="搜索代码或行业" clearable/><button onClick={() => { query.refetch(); refetch() }} aria-label="刷新"><RefreshCw size={17} className={isFetching ? 'spin' : undefined}/></button></div>
+    <QueryState loading={query.isLoading} error={query.error} retry={() => query.refetch()}/><div className="stock-list">{rows.map(row => <StockRow key={row.id} row={row} quote={quotes[String(row.symbol || '').toUpperCase()]}/>)}</div></>
 }
-function StockRow({ row }: { row: DailyWatch }) {
-  const change = row.current_price != null && row.prev_close ? (row.current_price / row.prev_close - 1) * 100 : null
-  return <NavLink className="stock-row" to={`/stocks/${row.id}/${row.symbol}`}><div className="ticker-logo">{row.symbol.slice(0, 2)}</div><div className="stock-name"><b>{row.symbol}</b><span>{row.sector} · {row.market_direction}</span></div><div className="stock-price"><b>{money(row.current_price)}</b><span className={(change || 0) >= 0 ? 'positive' : 'negative'}>{pct(change)}</span></div></NavLink>
+
+function StockRow({ row, quote }: { row: DailyWatch; quote?: { price?: number | null; day_pct?: number | null; session_label?: string } }) {
+  const price = quote?.price ?? row.current_price
+  const change = quote?.day_pct != null && Number.isFinite(Number(quote.day_pct))
+    ? Number(quote.day_pct)
+    : (price != null && row.prev_close ? (Number(price) / Number(row.prev_close) - 1) * 100 : null)
+  return <NavLink className="stock-row" to={`/stocks/${row.id}/${row.symbol}`}><div className="ticker-logo">{row.symbol.slice(0, 2)}</div><div className="stock-name"><b>{row.symbol}</b><span>{row.sector} · {row.market_direction}{quote?.session_label ? ` · ${quote.session_label}` : ''}</span></div><div className="stock-price"><b>{money(price)}</b><span className={(change || 0) >= 0 ? 'positive' : 'negative'}>{pct(change)}</span></div></NavLink>
 }
 
 function CryptoPage() {
   const query = useQuery({ queryKey: ['crypto-coins'], queryFn: api.cryptoCoins, staleTime: 60_000 })
   const positions = useQuery({ queryKey: ['positions'], queryFn: () => api.positions() })
   const rows = query.data?.items || []
-  const cryptoPositions = (positions.data || []).filter(row => row.platform === '币安' && row.status === '开始')
+  const cryptoPositions = (positions.data || []).filter(row => isCryptoPlatform(row.platform) && row.status === '开始')
+  const quotes = usePositionQuotes(cryptoPositions)
   return <><PageHead title="虚拟币" subtitle="关注币种与 24 小时行情"/>
     <QueryState loading={query.isLoading} error={query.error} retry={() => query.refetch()}/>
     <div className="crypto-list">{rows.map(row => <CryptoRow key={row.id} row={row}/>)}</div>
     <SectionTitle title="虚拟币持仓" action="查看全部" to="/crypto/positions"/>
     <QueryState loading={positions.isLoading} error={positions.error} retry={() => positions.refetch()}/>
-    <div className="asset-position-preview">{cryptoPositions.slice(0, 2).map(row => <PositionRow key={row.id} row={row}/>)}{positions.data && cryptoPositions.length === 0 && <div className="empty-card">暂无虚拟币持仓</div>}</div>
+    <div className="asset-position-preview">{cryptoPositions.slice(0, 2).map(row => <PositionRow key={row.id} row={row} quotes={quotes}/>)}{positions.data && cryptoPositions.length === 0 && <div className="empty-card">暂无虚拟币持仓</div>}</div>
     <div className="stock-section-head submenu-title"><h2>虚拟币工具</h2></div>
-    <nav className="stock-tool-menu"><StockToolLink to="/crypto/news" icon={<Newspaper/>} title="新闻" detail="查看虚拟币市场与行业最新消息"/><StockToolLink to="/crypto/strategies" icon={<Gauge/>} title="指标策略" detail="组合技术与链上指标，查看监听状态"/><StockToolLink to="/crypto/custom-strategies" icon={<ScrollText/>} title="自定义策略" detail="导数策略、高级策略与三态趋势策略"/><StockToolLink to="/crypto/positions" icon={<WalletCards/>} title="虚拟币持仓" detail="查看币安当前与历史持仓"/></nav>
+    <nav className="stock-tool-menu"><StockToolLink to="/crypto/news" icon={<Newspaper/>} title="新闻" detail="查看虚拟币市场与行业最新消息"/><StockToolLink to="/crypto/strategies" icon={<Gauge/>} title="指标策略" detail="组合技术与链上指标，查看监听状态"/><StockToolLink to="/crypto/custom-strategies" icon={<ScrollText/>} title="自定义策略" detail="导数策略、高级策略与三态趋势策略"/><StockToolLink to="/crypto/positions" icon={<WalletCards/>} title="虚拟币持仓" detail="查看币安 / OKX 当前与历史持仓"/></nav>
   </>
 }
 
@@ -340,15 +499,131 @@ function CustomStrategyRow({ row }: { row: CryptoCustomStrategy }) {
 
 function AssetPositionsPage({ asset }: { asset: 'stock' | 'crypto' }) {
   const client = useQueryClient()
-  const [showForm, setShowForm] = useState(false), [platform, setPlatform] = useState(asset === 'crypto' ? '币安' : '众安'), [status, setStatus] = useState('开始'), [name, setName] = useState(''), [shares, setShares] = useState(''), [price, setPrice] = useState(''), [fee, setFee] = useState('0'), [openedOn, setOpenedOn] = useState(today()), [expectedDays, setExpectedDays] = useState('21'), [reason, setReason] = useState('')
+  const [editing, setEditing] = useState<Position | null>(null)
+  const [showForm, setShowForm] = useState(false)
+  const [platform, setPlatform] = useState(asset === 'crypto' ? '币安' : '众安')
+  const [status, setStatus] = useState('开始')
+  const [side, setSide] = useState<'long' | 'short'>('long')
+  const [name, setName] = useState('')
+  const [shares, setShares] = useState('')
+  const [price, setPrice] = useState('')
+  const [fee, setFee] = useState('0')
+  const [openedOn, setOpenedOn] = useState(today())
+  const [expectedDays, setExpectedDays] = useState('21')
+  const [reason, setReason] = useState('')
   const query = useQuery({ queryKey: ['positions'], queryFn: () => api.positions() })
-  const rows = (query.data || []).filter(row => asset === 'crypto' ? row.platform === '币安' : row.platform !== '币安')
-  const create = useMutation({ mutationFn: () => api.createPosition({ platform, status, name: name.trim(), shares: Number(shares), open_price: Number(price), fee: Number(fee || 0), opened_on: openedOn || null, expected_days: Number(expectedDays || 21), open_reason: reason.trim() || null }), onSuccess: () => { client.invalidateQueries({ queryKey: ['positions'] }); setName(''); setShares(''); setPrice(''); setReason(''); setShowForm(false); Toast.show({ icon: 'success', content: '持仓已添加' }) }, onError: error => Toast.show({ icon: 'fail', content: error.message }) })
+  const strategies = useQuery({ queryKey: ['strategy-plans'], queryFn: api.strategyPlans, staleTime: 5 * 60_000 })
+  const rows = (query.data || []).filter(row => asset === 'crypto' ? isCryptoPlatform(row.platform) : !isCryptoPlatform(row.platform))
+  const quotes = usePositionQuotes(rows)
+  const resetForm = () => {
+    setEditing(null); setPlatform(asset === 'crypto' ? '币安' : '众安'); setStatus('开始'); setSide('long'); setName(''); setShares(''); setPrice(''); setFee('0'); setOpenedOn(today()); setExpectedDays('21'); setReason('')
+  }
+  const openCreate = () => { resetForm(); setShowForm(true) }
+  const openEdit = (row: Position) => {
+    setEditing(row)
+    setPlatform(row.platform)
+    setStatus(row.status === '已结束' ? '开始' : row.status)
+    setSide(row.strategy_side === 'short' ? 'short' : 'long')
+    setName(row.name)
+    setShares(String(row.shares ?? ''))
+    setPrice(String(row.open_price ?? ''))
+    setFee(String(row.fee ?? 0))
+    setOpenedOn(row.opened_on || today())
+    setExpectedDays(String(row.expected_days || 21))
+    setReason(row.open_reason || '')
+    setShowForm(true)
+  }
+  const closeForm = () => { setShowForm(false); resetForm() }
+  const save = useMutation({
+    mutationFn: async () => {
+      const strategyId = await ensureSideStrategy(side, strategies.data || [])
+      const payload = {
+        platform,
+        status,
+        name: name.trim(),
+        shares: Number(shares),
+        open_price: Number(price),
+        fee: Number(fee || 0),
+        expected_days: Number(expectedDays || 21),
+        open_reason: reason.trim() || null,
+        strategy_id: strategyId,
+      }
+      if (editing) return api.updatePosition(editing.id, payload)
+      return api.createPosition({ ...payload, opened_on: openedOn || null })
+    },
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ['positions'] })
+      client.invalidateQueries({ queryKey: ['strategy-plans'] })
+      client.invalidateQueries({ queryKey: ['position-quotes'] })
+      closeForm()
+      Toast.show({ icon: 'success', content: editing ? '持仓已更新' : '持仓已添加' })
+    },
+    onError: (error: Error) => Toast.show({ icon: 'fail', content: error.message }),
+  })
   const remove = useMutation({ mutationFn: (id: number) => api.deletePosition(id), onSuccess: () => { client.invalidateQueries({ queryKey: ['positions'] }); Toast.show({ icon: 'success', content: '持仓已删除' }) }, onError: error => Toast.show({ icon: 'fail', content: error.message }) })
   const deleteRow = (row: Position) => { if (window.confirm(`删除 ${row.name} 这笔持仓？`)) remove.mutate(row.id) }
-  return <><SecondaryHeader title={asset === 'crypto' ? '虚拟币持仓' : '股票持仓'} subtitle="当前、计划与历史持仓" fallback={asset === 'crypto' ? '/crypto' : '/stocks'}/><div className="page-action"><button onClick={() => setShowForm(value => !value)}>{showForm ? <X size={17}/> : <Plus size={17}/>} {showForm ? '取消' : '新增持仓'}</button></div>
-    {showForm && <section className="mobile-editor position-editor"><label>平台<input value={asset === 'crypto' ? '币安' : '众安'} disabled/></label><label>状态<select value={status} onChange={event => setStatus(event.target.value)}><option>开始</option><option>未开始</option></select></label><label>代码<input value={name} onChange={event => setName(event.target.value.toUpperCase())} placeholder={asset === 'crypto' ? 'BTCUSDT' : 'AAPL'}/></label><label>数量<input type="number" min="0" step="any" value={shares} onChange={event => setShares(event.target.value)} placeholder="0"/></label><label>开仓价<input type="number" min="0" step="any" value={price} onChange={event => setPrice(event.target.value)} placeholder="0.00"/></label><label>手续费<input type="number" min="0" step="any" value={fee} onChange={event => setFee(event.target.value)}/></label><label>开仓日期<input type="date" value={openedOn} onChange={event => setOpenedOn(event.target.value)}/></label><label>预计持仓天数<input type="number" min="1" max="252" value={expectedDays} onChange={event => setExpectedDays(event.target.value)}/></label><label className="full-field">开仓原因<input value={reason} onChange={event => setReason(event.target.value)} placeholder="可选"/></label><Button className="full-field" block color="primary" loading={create.isPending} disabled={!name.trim() || !(Number(shares) > 0) || !(Number(price) > 0)} onClick={() => create.mutate()}>保存持仓</Button></section>}
-    <QueryState loading={query.isLoading} error={query.error} retry={() => query.refetch()}/>{query.data && <><PositionGroup title="当前持仓" rows={rows.filter(row => row.status === '开始')} empty="暂无当前持仓" onDelete={deleteRow}/><PositionGroup title="持仓计划" rows={rows.filter(row => row.status === '未开始')} empty="暂无持仓计划" onDelete={deleteRow}/><PositionGroup title="已结束" rows={rows.filter(row => row.status === '已结束')} empty="暂无历史持仓"/></>}</>
+  return <><SecondaryHeader title={asset === 'crypto' ? '虚拟币持仓' : '股票持仓'} subtitle="当前、计划与历史持仓" fallback={asset === 'crypto' ? '/crypto' : '/stocks'}/><div className="page-action"><button onClick={() => showForm ? closeForm() : openCreate()}>{showForm ? <X size={17}/> : <Plus size={17}/>} {showForm ? '取消' : '新增持仓'}</button></div>
+    {showForm && <PositionEditor status={status} setStatus={setStatus} side={side} setSide={setSide} name={name} setName={setName} shares={shares} setShares={setShares} price={price} setPrice={setPrice} fee={fee} setFee={setFee} openedOn={openedOn} setOpenedOn={setOpenedOn} expectedDays={expectedDays} setExpectedDays={setExpectedDays} reason={reason} setReason={setReason} platform={platform} setPlatform={setPlatform} editing={Boolean(editing)} loading={save.isPending} onSave={() => save.mutate()} asset={asset}/>}
+    <QueryState loading={query.isLoading} error={query.error} retry={() => query.refetch()}/>{query.data && <><PositionGroup title="当前持仓" rows={rows.filter(row => row.status === '开始')} empty="暂无当前持仓" quotes={quotes} onDelete={deleteRow} onEdit={openEdit}/><PositionGroup title="持仓计划" rows={rows.filter(row => row.status === '未开始')} empty="暂无持仓计划" quotes={quotes} onDelete={deleteRow} onEdit={openEdit}/><PositionGroup title="已结束" rows={rows.filter(row => row.status === '已结束')} empty="暂无历史持仓" quotes={quotes}/></>}</>
+}
+
+async function ensureSideStrategy(side: 'long' | 'short', plans: StrategyPlan[]) {
+  const label = side === 'short' ? '做空' : '做多'
+  const usable = plans.filter(plan => plan.source !== 'file')
+  const preferred = usable.find(plan => plan.name === label && normalizeSide(plan.side) === side)
+  const any = preferred || usable.find(plan => normalizeSide(plan.side) === side)
+  if (any) return any.id
+  const created = await api.createStrategyPlan({ name: label, side, formula: {}, timeframe: '1d' })
+  return created.id
+}
+
+function normalizeSide(side?: string | null): 'long' | 'short' {
+  const text = String(side || 'long').trim().toLowerCase()
+  return text === 'short' || text === '做空' || text === '空' ? 'short' : 'long'
+}
+
+function PositionEditor({
+  status, setStatus, side, setSide, name, setName, shares, setShares, price, setPrice, fee, setFee,
+  openedOn, setOpenedOn, expectedDays, setExpectedDays, reason, setReason, platform, setPlatform,
+  editing, loading, onSave, asset,
+}: {
+  status: string; setStatus: (v: string) => void
+  side: 'long' | 'short'; setSide: (v: 'long' | 'short') => void
+  name: string; setName: (v: string) => void
+  shares: string; setShares: (v: string) => void
+  price: string; setPrice: (v: string) => void
+  fee: string; setFee: (v: string) => void
+  openedOn: string; setOpenedOn: (v: string) => void
+  expectedDays: string; setExpectedDays: (v: string) => void
+  reason: string; setReason: (v: string) => void
+  platform: string
+  setPlatform: (v: string) => void
+  editing: boolean
+  loading: boolean
+  onSave: () => void
+  asset?: 'stock' | 'crypto'
+}) {
+  const cryptoMode = asset === 'crypto' || isCryptoPlatform(platform)
+  return <section className="mobile-editor position-editor">
+    <label>平台<select value={platform} onChange={event => setPlatform(event.target.value)} disabled={asset === 'stock'}>
+      {asset === 'crypto' ? <><option>币安</option><option>OKX</option></> : asset === 'stock' ? <option>众安</option> : <><option>众安</option><option>币安</option><option>OKX</option></>}
+    </select></label>
+    <label>状态<select value={status} onChange={event => setStatus(event.target.value)}><option>开始</option><option>未开始</option></select></label>
+    <label className="full-field">方向
+      <div className="side-toggle">
+        <button type="button" className={side === 'long' ? 'active long' : ''} onClick={() => setSide('long')}>做多</button>
+        <button type="button" className={side === 'short' ? 'active short' : ''} onClick={() => setSide('short')}>做空</button>
+      </div>
+    </label>
+    <label>代码<input value={name} onChange={event => setName(event.target.value.toUpperCase())} placeholder={cryptoMode ? 'BTCUSDT' : 'AAPL'}/></label>
+    <label>数量<input type="number" min="0" step="any" value={shares} onChange={event => setShares(event.target.value)} placeholder="0"/></label>
+    <label>开仓价<input type="number" min="0" step="any" value={price} onChange={event => setPrice(event.target.value)} placeholder="0.00"/></label>
+    <label>手续费<input type="number" min="0" step="any" value={fee} onChange={event => setFee(event.target.value)}/></label>
+    <label>开仓日期<input type="date" value={openedOn} onChange={event => setOpenedOn(event.target.value)} disabled={editing}/></label>
+    <label>预计持仓天数<input type="number" min="1" max="252" value={expectedDays} onChange={event => setExpectedDays(event.target.value)}/></label>
+    <label className="full-field">开仓原因<input value={reason} onChange={event => setReason(event.target.value)} placeholder="可选"/></label>
+    <Button className="full-field" block color="primary" loading={loading} disabled={!name.trim() || !(Number(shares) > 0) || !(Number(price) > 0)} onClick={onSave}>{editing ? '保存修改' : '保存持仓'}</Button>
+  </section>
 }
 
 function MePage() {
@@ -400,31 +675,93 @@ function PlansPage() {
 }
 
 function PositionsPage() {
-  const client = useQueryClient(), [showForm, setShowForm] = useState(false)
-  const [platform, setPlatform] = useState('众安'), [status, setStatus] = useState('未开始'), [name, setName] = useState(''), [shares, setShares] = useState(''), [price, setPrice] = useState(''), [fee, setFee] = useState('0'), [openedOn, setOpenedOn] = useState(today()), [expectedDays, setExpectedDays] = useState('21'), [reason, setReason] = useState('')
+  const client = useQueryClient()
+  const [editing, setEditing] = useState<Position | null>(null)
+  const [showForm, setShowForm] = useState(false)
+  const [platform, setPlatform] = useState('众安')
+  const [status, setStatus] = useState('未开始')
+  const [side, setSide] = useState<'long' | 'short'>('long')
+  const [name, setName] = useState('')
+  const [shares, setShares] = useState('')
+  const [price, setPrice] = useState('')
+  const [fee, setFee] = useState('0')
+  const [openedOn, setOpenedOn] = useState(today())
+  const [expectedDays, setExpectedDays] = useState('21')
+  const [reason, setReason] = useState('')
   const query = useQuery({ queryKey: ['positions'], queryFn: () => api.positions() })
-  const create = useMutation({ mutationFn: () => api.createPosition({ platform, status, name: name.trim(), shares: Number(shares), open_price: Number(price), fee: Number(fee || 0), opened_on: openedOn || null, expected_days: Number(expectedDays || 21), open_reason: reason.trim() || null }), onSuccess: () => { client.invalidateQueries({ queryKey: ['positions'] }); setName(''); setShares(''); setPrice(''); setReason(''); setShowForm(false); Toast.show({ icon: 'success', content: '持仓已添加' }) }, onError: error => Toast.show({ icon: 'fail', content: error.message }) })
-  const remove = useMutation({ mutationFn: (id: number) => api.deletePosition(id), onSuccess: () => { client.invalidateQueries({ queryKey: ['positions'] }); Toast.show({ icon: 'success', content: '持仓已删除' }) }, onError: error => Toast.show({ icon: 'fail', content: error.message }) })
+  const strategies = useQuery({ queryKey: ['strategy-plans'], queryFn: api.strategyPlans, staleTime: 5 * 60_000 })
   const rows = query.data || [], active = rows.filter(row => row.status === '开始'), planned = rows.filter(row => row.status === '未开始'), closed = rows.filter(row => row.status === '已结束')
+  const quotes = usePositionQuotes(rows)
   const invested = active.reduce((sum, row) => sum + Number(row.open_amount || 0), 0)
   const closedPnl = closed.reduce((sum, row) => sum + Number(row.pnl_amount || 0), 0)
+  const resetForm = () => {
+    setEditing(null); setPlatform('众安'); setStatus('未开始'); setSide('long'); setName(''); setShares(''); setPrice(''); setFee('0'); setOpenedOn(today()); setExpectedDays('21'); setReason('')
+  }
+  const openCreate = () => { resetForm(); setShowForm(true) }
+  const openEdit = (row: Position) => {
+    setEditing(row)
+    setPlatform(row.platform)
+    setStatus(row.status === '已结束' ? '开始' : row.status)
+    setSide(row.strategy_side === 'short' ? 'short' : 'long')
+    setName(row.name)
+    setShares(String(row.shares ?? ''))
+    setPrice(String(row.open_price ?? ''))
+    setFee(String(row.fee ?? 0))
+    setOpenedOn(row.opened_on || today())
+    setExpectedDays(String(row.expected_days || 21))
+    setReason(row.open_reason || '')
+    setShowForm(true)
+  }
+  const closeForm = () => { setShowForm(false); resetForm() }
+  const save = useMutation({
+    mutationFn: async () => {
+      const strategyId = await ensureSideStrategy(side, strategies.data || [])
+      const payload = {
+        platform,
+        status,
+        name: name.trim(),
+        shares: Number(shares),
+        open_price: Number(price),
+        fee: Number(fee || 0),
+        expected_days: Number(expectedDays || 21),
+        open_reason: reason.trim() || null,
+        strategy_id: strategyId,
+      }
+      if (editing) return api.updatePosition(editing.id, payload)
+      return api.createPosition({ ...payload, opened_on: openedOn || null })
+    },
+    onSuccess: () => {
+      client.invalidateQueries({ queryKey: ['positions'] })
+      client.invalidateQueries({ queryKey: ['strategy-plans'] })
+      client.invalidateQueries({ queryKey: ['position-quotes'] })
+      closeForm()
+      Toast.show({ icon: 'success', content: editing ? '持仓已更新' : '持仓已添加' })
+    },
+    onError: (error: Error) => Toast.show({ icon: 'fail', content: error.message }),
+  })
+  const remove = useMutation({ mutationFn: (id: number) => api.deletePosition(id), onSuccess: () => { client.invalidateQueries({ queryKey: ['positions'] }); Toast.show({ icon: 'success', content: '持仓已删除' }) }, onError: error => Toast.show({ icon: 'fail', content: error.message }) })
   const deleteRow = (row: Position) => { if (window.confirm(`删除 ${row.name} 这笔持仓？`)) remove.mutate(row.id) }
-  return <><SecondaryHeader title="我的持仓" subtitle="当前、计划与历史持仓" fallback="/me"/><div className="page-action"><button onClick={() => setShowForm(value => !value)}>{showForm ? <X size={17}/> : <Plus size={17}/>} {showForm ? '取消' : '新增持仓'}</button></div>
-    {showForm && <section className="mobile-editor position-editor"><label>平台<select value={platform} onChange={event => setPlatform(event.target.value)}><option>众安</option><option>币安</option></select></label><label>状态<select value={status} onChange={event => setStatus(event.target.value)}><option>未开始</option><option>开始</option></select></label><label>代码<input value={name} onChange={event => setName(event.target.value.toUpperCase())} placeholder="AAPL / BTCUSDT"/></label><label>数量<input type="number" value={shares} onChange={event => setShares(event.target.value)} placeholder="0"/></label><label>开仓价<input type="number" value={price} onChange={event => setPrice(event.target.value)} placeholder="0.00"/></label><label>手续费<input type="number" value={fee} onChange={event => setFee(event.target.value)}/></label><label>开仓日期<input type="date" value={openedOn} onChange={event => setOpenedOn(event.target.value)}/></label><label>预计持仓天数<input type="number" min="1" max="252" value={expectedDays} onChange={event => setExpectedDays(event.target.value)}/></label><label className="full-field">开仓原因<input value={reason} onChange={event => setReason(event.target.value)} placeholder="可选"/></label><Button className="full-field" block color="primary" loading={create.isPending} disabled={!name.trim() || !(Number(shares) > 0) || !(Number(price) > 0)} onClick={() => create.mutate()}>保存持仓</Button></section>}
+  return <><SecondaryHeader title="我的持仓" subtitle="当前、计划与历史持仓" fallback="/me"/><div className="page-action"><button onClick={() => showForm ? closeForm() : openCreate()}>{showForm ? <X size={17}/> : <Plus size={17}/>} {showForm ? '取消' : '新增持仓'}</button></div>
+    {showForm && <PositionEditor status={status} setStatus={setStatus} side={side} setSide={setSide} name={name} setName={setName} shares={shares} setShares={setShares} price={price} setPrice={setPrice} fee={fee} setFee={setFee} openedOn={openedOn} setOpenedOn={setOpenedOn} expectedDays={expectedDays} setExpectedDays={setExpectedDays} reason={reason} setReason={setReason} platform={platform} setPlatform={setPlatform} editing={Boolean(editing)} loading={save.isPending} onSave={() => save.mutate()}/>}
     <QueryState loading={query.isLoading} error={query.error} retry={() => query.refetch()}/>
     {query.data && <><div className="position-summary"><article><span>进行中</span><strong>{active.length}</strong></article><article><span>开仓金额</span><strong>{compact(invested)}</strong></article><article><span>已结盈亏</span><strong className={closedPnl >= 0 ? 'positive' : 'negative'}>{money(closedPnl)}</strong></article></div>
-      <PositionGroup title="当前持仓" rows={active} empty="暂无进行中的持仓" onDelete={deleteRow}/><PositionGroup title="持仓计划" rows={planned} empty="暂无未开始的计划" onDelete={deleteRow}/><PositionGroup title="已结束" rows={closed} empty="暂无已结束的持仓"/>
+      <PositionGroup title="当前持仓" rows={active} empty="暂无进行中的持仓" quotes={quotes} onDelete={deleteRow} onEdit={openEdit}/><PositionGroup title="持仓计划" rows={planned} empty="暂无未开始的计划" quotes={quotes} onDelete={deleteRow} onEdit={openEdit}/><PositionGroup title="已结束" rows={closed} empty="暂无已结束的持仓" quotes={quotes}/>
     </>}
   </>
 }
 
-function PositionGroup({ title, rows, empty, onDelete }: { title: string; rows: Position[]; empty: string; onDelete?: (row: Position) => void }) {
-  return <section className="position-group"><h2>{title}<span>{rows.length}</span></h2><div className="position-list">{rows.map(row => <PositionRow key={row.id} row={row} onDelete={onDelete}/>)}{rows.length === 0 && <div className="empty-card">{empty}</div>}</div></section>
+function PositionGroup({ title, rows, empty, quotes = {}, onDelete, onEdit }: { title: string; rows: Position[]; empty: string; quotes?: QuoteMap; onDelete?: (row: Position) => void; onEdit?: (row: Position) => void }) {
+  return <section className="position-group"><h2>{title}<span>{rows.length}</span></h2><div className="position-list">{rows.map(row => <PositionRow key={row.id} row={row} quotes={quotes} onDelete={onDelete} onEdit={onEdit}/>)}{rows.length === 0 && <div className="empty-card">{empty}</div>}</div></section>
 }
 
-function PositionRow({ row, onDelete }: { row: Position; onDelete?: (row: Position) => void }) {
-  const pnl = Number(row.pnl_amount || 0), percent = row.pnl_pct == null ? null : Number(row.pnl_pct) * 100
-  return <article className="position-row"><header><div><b>{row.name}</b><span>{row.platform} · {row.status}</span></div><div className="position-head-actions"><em className={pnl >= 0 ? 'positive' : 'negative'}>{pnl >= 0 ? '+' : ''}{money(pnl)}</em>{onDelete && <button onClick={() => onDelete(row)} aria-label="删除持仓"><Trash2 size={16}/></button>}</div></header><div className="position-details"><span>数量 <b>{row.shares}</b></span><span>成本 <b>{money(row.open_price)}</b></span><span>开仓金额 <b>{money(row.open_amount)}</b></span><span>持仓 <b>{row.holding_days} 天</b></span></div>{percent != null && <div className={`position-pnl ${pnl >= 0 ? 'positive' : 'negative'}`}>{percent >= 0 ? '+' : ''}{percent.toFixed(2)}%</div>}{(row.strategy_name || row.open_reason) && <p>{[row.strategy_name, row.open_reason].filter(Boolean).join(' · ')}</p>}</article>
+function PositionRow({ row, quotes = {}, onDelete, onEdit }: { row: Position; quotes?: QuoteMap; onDelete?: (row: Position) => void; onEdit?: (row: Position) => void }) {
+  const live = livePnl(row, quotes)
+  const pnl = live.amount
+  const percent = live.percent
+  const sideLabel = row.strategy_side === 'short' ? '做空' : row.strategy_side === 'long' ? '做多' : null
+  const noteParts = [row.strategy_name, row.open_reason].filter(Boolean).filter((part, index, list) => list.indexOf(part) === index)
+  const note = noteParts.filter(part => !(sideLabel && part === sideLabel)).join(' · ')
+  return <article className="position-row"><header><div><b>{row.name}</b><span>{row.platform} · {row.status}{sideLabel ? ` · ${sideLabel}` : ''}</span></div><div className="position-head-actions"><em className={pnl >= 0 ? 'positive' : 'negative'}>{pnl >= 0 ? '+' : ''}{money(pnl)}</em>{onEdit && <button className="edit-button" onClick={() => onEdit(row)} aria-label="编辑持仓"><Pencil size={15}/></button>}{onDelete && <button onClick={() => onDelete(row)} aria-label="删除持仓"><Trash2 size={16}/></button>}</div></header><div className="position-details"><span>现价 <b>{live.price == null ? '—' : money(live.price)}</b></span><span>成本 <b>{money(row.open_price)}</b></span><span>开仓金额 <b>{money(row.open_amount)}</b></span><span>数量 <b>{row.shares}</b></span><span>市值 <b>{live.price == null ? money(row.open_amount) : money(live.price * Number(row.shares || 0))}</b></span><span>持仓 <b>{row.holding_days} 天</b></span></div>{percent != null && <div className={`position-pnl ${pnl >= 0 ? 'positive' : 'negative'}`}>{percent >= 0 ? '+' : ''}{percent.toFixed(2)}%</div>}{note && <p>{note}</p>}</article>
 }
 
 function TradesPage() {
@@ -467,8 +804,45 @@ function StockDetailPage() {
   const addToList = useMutation({ mutationFn: () => api.addScreenRows([{ symbol: symbol.toUpperCase() }]), onSuccess: data => { client.invalidateQueries({ queryKey: ['watches'] }); Toast.show({ icon: 'success', content: data.added.length ? '已加入股票列表' : '已在股票列表中' }) }, onError: error => Toast.show({ icon: 'fail', content: error.message }) })
   const [open, setOpen] = useState<string[]>(() => detailSections.map(([key]) => key))
   const toggle = (key: string) => setOpen(keys => keys.includes(key) ? keys.filter(item => item !== key) : [...keys, key])
-  return <><SecondaryHeader title="股票详情" subtitle={symbol} fallback={Number.isFinite(numericId) ? '/stocks/list' : '/stocks/screen/results'}/><div className="detail-hero"><div className="detail-hero-top"><span>{symbol}</span>{!alreadyListed && watches.data && <button onClick={() => addToList.mutate()} disabled={addToList.isPending}><Plus size={15}/>{addToList.isPending ? '添加中' : '加入股票列表'}</button>}</div><h1>{symbol} 研究详情</h1><p>关键数据按需加载，保持移动端浏览流畅</p></div>
+  return <><SecondaryHeader title="股票详情" subtitle={symbol} fallback={Number.isFinite(numericId) ? '/stocks/list' : '/stocks/screen/results'}/><div className="detail-hero"><div className="detail-hero-top"><span>{symbol}</span>{!alreadyListed && watches.data && <button onClick={() => addToList.mutate()} disabled={addToList.isPending}><Plus size={15}/>{addToList.isPending ? '添加中' : '加入股票列表'}</button>}</div><h1>{symbol} 研究详情</h1><p>盘前 / 盘中 / 盘后挂单参考与研究数据</p></div>
+    <EntryAnalysisPanel id={numericId} symbol={symbol}/>
     <div className="detail-sections">{detailSections.map(([key, label]) => <section className="detail-section" key={key}><button className="detail-section-toggle" onClick={() => toggle(key)} aria-expanded={open.includes(key)}><span>{label}</span>{open.includes(key) ? <ChevronUp size={19}/> : <ChevronDown size={19}/>}</button>{open.includes(key) && <DetailSection section={key} id={numericId} symbol={symbol}/>}</section>)}</div></>
+}
+
+function EntryAnalysisPanel({ id, symbol }: { id: number; symbol: string }) {
+  const [horizon, setHorizon] = useState(10)
+  const [cost, setCost] = useState(20)
+  const [borrow, setBorrow] = useState(5)
+  const analyze = useMutation({
+    mutationFn: () => {
+      const body = { horizon, cost_bps: cost, borrow_pct: borrow }
+      return Number.isFinite(id) ? api.stockEntryAnalysis(id, body) : api.stockEntryAnalysisBySymbol(symbol, body)
+    },
+    onError: (error: Error) => Toast.show({ icon: 'fail', content: error.message }),
+  })
+  const result = analyze.data
+  const moneyPx = (value?: number | null) => value == null ? '—' : `$${Number(value).toLocaleString('en-US', { maximumFractionDigits: 2 })}`
+  const pctText = (value?: number | null) => value == null ? '—' : `${Number(value).toFixed(2)}%`
+  return <section className="entry-analysis-card">
+    <header><div><BarChart3 size={18}/><b>买卖价分析</b></div><span>下一交易日挂单参考</span></header>
+    <p className="entry-lead">按盘前 / 盘中 / 盘后均可计算；候选限价默认对下一交易日有效，开盘跌穿止损则取消。</p>
+    <div className="entry-controls">
+      <label>持有周期<select value={horizon} onChange={event => setHorizon(Number(event.target.value))}><option value={3}>短线 3 日</option><option value={10}>波段 10 日</option><option value={30}>中期 30 日</option><option value={60}>中期 60 日</option></select></label>
+      <label>往返成本 bp<input type="number" min={0} max={500} value={cost} onChange={event => setCost(Number(event.target.value) || 0)}/></label>
+      <label>借券年化 %<input type="number" min={0} max={200} step="0.1" value={borrow} onChange={event => setBorrow(Number(event.target.value) || 0)}/></label>
+    </div>
+    <Button block color="primary" loading={analyze.isPending} onClick={() => analyze.mutate()}>{analyze.isPending ? '计算中…' : '计算买卖价格'}</Button>
+    {analyze.error && <div className="state-card error">{(analyze.error as Error).message}</div>}
+    {result && <>
+      <div className="entry-meta"><span>截至 {result.asof}</span><span>趋势 {result.trend}</span><span>参考价 {moneyPx(result.price)}</span></div>
+      <div className="entry-plan-list">{(result.sides || []).map((plan: any) => <article key={plan.side} className={`entry-plan ${plan.side}`}>
+        <header><b>{plan.side === 'long' ? '买入候选' : '做空候选'}</b><span>{plan.status}</span></header>
+        <p>{plan.reason}</p>
+        <div className="entry-plan-grid"><span>限价 <b>{moneyPx(plan.entry)}</b></span><span>止损 <b>{moneyPx(plan.stop)}</b></span><span>目标 <b>{moneyPx(plan.target)}</b></span><span>盈亏比 <b>{plan.reward_risk ? `${plan.reward_risk}:1` : '—'}</b></span></div>
+        <small>历史成交 {plan.history?.trades ?? 0}/{plan.history?.opportunities ?? 0} · 成交率 {pctText(plan.history?.fill_rate)} · 胜率 {pctText(plan.history?.win_rate)}</small>
+      </article>)}</div>
+    </>}
+  </section>
 }
 function DetailSection({ section, id, symbol }: { section: string; id: number; symbol: string }) {
   const query = useQuery({ queryKey: ['stock-detail', id, symbol, section], queryFn: () => Number.isFinite(id) ? api.stockDetail<any>(id, section) : api.stockDetailBySymbol<any>(symbol, section), staleTime: 5 * 60_000 })

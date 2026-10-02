@@ -6,6 +6,7 @@ import time
 
 import httpx
 
+from app.http_outbound import http_client
 from app.services.binance import BinanceError, normalize_symbol, public_kline_bars, public_ticker
 
 CG_BASE = "https://api.coingecko.com/api/v3"
@@ -43,9 +44,9 @@ def _cached(key: str, ttl: float, factory):
     return value
 
 
-def _http_get(url: str, params: dict | None = None, timeout: float = 15.0) -> object:
-    """直连外网；忽略系统代理，避免本地代理 403。"""
-    with httpx.Client(timeout=timeout, headers=HEADERS, trust_env=False) as client:
+def _http_get(url: str, params: dict | None = None, timeout: float = 10.0) -> object:
+    """外网 GET；本地有 .env 代理时走 Clash，服务器无代理时直连。"""
+    with http_client(timeout=timeout, headers=HEADERS) as client:
         res = client.get(url, params=params or {})
     try:
         data = res.json()
@@ -316,9 +317,34 @@ def enrich_coin_row(row: dict) -> dict:
     return enrich_coin_rows([row])[0]
 
 
-def enrich_coin_rows(rows: list[dict]) -> list[dict]:
+def _bn_quote_map() -> dict[str, dict]:
+    """一次拉全市场 ticker，避免列表接口对每个币串行请求。"""
+    out: dict[str, dict] = {}
+    for row in _bn_ticker_rows():
+        sym = str(row.get("symbol") or "")
+        if not sym:
+            continue
+        try:
+            price = float(row.get("lastPrice") or 0)
+            change = float(row.get("priceChangePercent") or 0)
+            vol = float(row.get("quoteVolume") or 0)
+        except (TypeError, ValueError):
+            continue
+        out[sym] = {
+            "price": price,
+            "change_24h": change,
+            "volume_24h": vol,
+            "sparkline": [],
+            "quote_source": "binance",
+        }
+    return out
+
+
+def enrich_coin_rows(rows: list[dict], *, with_ma: bool = True) -> list[dict]:
     ids = [r.get("coingecko_id") for r in rows if r.get("coingecko_id")]
     quotes = quotes_by_ids(ids) if ids else {}
+    need_bn = any(not quotes.get(r.get("coingecko_id")) for r in rows)
+    bn_map = _bn_quote_map() if need_bn else {}
     out = []
     for row in rows:
         item = dict(row)
@@ -328,14 +354,18 @@ def enrich_coin_rows(rows: list[dict]) -> list[dict]:
             item.update(q)
             item["quote_source"] = "coingecko"
         else:
-            bn_q = _binance_quote(row.get("binance_symbol"), row.get("symbol"))
+            bn = normalize_symbol(row.get("binance_symbol") or row.get("symbol") or "")
+            bn_q = bn_map.get(bn) if bn else None
+            if not bn_q:
+                bn_q = _binance_quote(row.get("binance_symbol"), row.get("symbol"))
             if bn_q:
                 item.update(bn_q)
             else:
                 item["quote_source"] = None
                 item["error"] = "行情暂不可用"
-        ma = moving_averages(item.get("binance_symbol"), item.get("symbol"))
-        item.update(ma)
+        if with_ma:
+            ma = moving_averages(item.get("binance_symbol"), item.get("symbol"))
+            item.update(ma)
         out.append(item)
     return out
 

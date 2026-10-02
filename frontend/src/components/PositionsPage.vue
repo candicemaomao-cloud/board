@@ -9,7 +9,8 @@ import { armQuoteTimer, clearQuoteTimer } from '../marketHours'
 
 const emit = defineEmits(['changed'])
 
-const PLATFORM_OPTIONS = ['众安', '币安']
+const PLATFORM_OPTIONS = ['众安', '币安', 'OKX']
+const CRYPTO_PLATFORMS = new Set(['币安', 'OKX'])
 const STATUS_OPTIONS = ['未开始', '开始']
 /** 常见虚拟币：录入时自动走币安行情 */
 const CRYPTO_BASES = new Set([
@@ -240,7 +241,7 @@ function onNameChange() {
   if (!name) return
   if (looksLikeCrypto(name)) {
     form.name = compactSymbol(name) || name.toUpperCase()
-    form.platform = '币安'
+    if (!CRYPTO_PLATFORMS.has(form.platform)) form.platform = '币安'
   }
 }
 
@@ -427,7 +428,7 @@ function quoteItem(row) {
     return { symbol: compactSymbol(row.quote_symbol), name: row.name, source: row.quote_source }
   }
   if (!compact) return null
-  if (row.platform === '币安' || looksLikeCrypto(compact) || row.quote_source === 'binance') {
+  if (CRYPTO_PLATFORMS.has(row.platform) || looksLikeCrypto(compact) || row.quote_source === 'binance') {
     const symbol = compact.endsWith('USDT') || compact.endsWith('USDC') ? compact : `${compact}USDT`
     return { symbol, name: row.name, source: 'binance' }
   }
@@ -775,7 +776,7 @@ function emptyText(kind) {
     <div v-if="modal" class="modal-mask" @click.self="modal = null">
       <div class="modal" v-if="modal === 'edit'">
         <h3>{{ editing ? '改持仓' : '记一笔持仓' }}</h3>
-        <p class="goal-lead">股票选众安，虚拟币选币安（填 BTC / ETH 也会自动识别）。未开始不占资金；改成「开始」后占用可使用金额。</p>
+        <p class="goal-lead">股票选众安，虚拟币选币安或 OKX（填 BTC / ETH 也会自动识别）。未开始不占资金；改成「开始」后占用可使用金额。</p>
         <div class="form-grid">
           <div class="field">
             <label>平台</label>

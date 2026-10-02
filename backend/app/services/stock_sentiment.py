@@ -7,6 +7,8 @@ from datetime import date, datetime, timedelta
 
 import httpx
 
+from app.http_outbound import http_client
+
 CNN_FNG_URL = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
 HEADERS = {
     "User-Agent": (
@@ -81,7 +83,7 @@ def fear_greed(*, history_days: int = 30) -> dict:
     def fetch():
         url = f"{CNN_FNG_URL}/{start}"
         try:
-            with httpx.Client(timeout=20.0, headers=HEADERS, trust_env=False) as client:
+            with http_client(timeout=20.0, headers=HEADERS) as client:
                 res = client.get(url)
             data = res.json() if res.headers.get("content-type", "").startswith("application/json") else {}
         except Exception as exc:  # noqa: BLE001
@@ -321,7 +323,7 @@ def _cnn_raw(*, history_days: int = 400) -> dict:
     def fetch():
         url = f"{CNN_FNG_URL}/{start}"
         try:
-            with httpx.Client(timeout=25.0, headers=HEADERS, trust_env=False) as client:
+            with http_client(timeout=25.0, headers=HEADERS) as client:
                 res = client.get(url)
             data = res.json() if "json" in (res.headers.get("content-type") or "") else {}
         except Exception as exc:  # noqa: BLE001

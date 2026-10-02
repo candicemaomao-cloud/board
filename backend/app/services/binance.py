@@ -10,6 +10,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.http_outbound import http_client
 from app.models import Side, TradeLog
 from app.services.tags import get_or_create_tags
 
@@ -67,7 +68,7 @@ def public_quote(symbol: str) -> dict:
         raise BinanceError("请填写股票代码，例如 SKHY")
     url = f"{FUTURES_BASE}/fapi/v1/premiumIndex?symbol={symbol}"
     try:
-        with httpx.Client(timeout=10.0, headers=HEADERS_UA, trust_env=False) as client:
+        with http_client(timeout=10.0, headers=HEADERS_UA) as client:
             res = client.get(url)
         data = res.json()
     except httpx.HTTPError as exc:
@@ -92,7 +93,7 @@ def public_ticker(symbol: str) -> dict:
         raise BinanceError("请填写股票代码，例如 SKHY")
     url = f"{FUTURES_BASE}/fapi/v1/ticker/24hr?symbol={symbol}"
     try:
-        with httpx.Client(timeout=10.0, headers=HEADERS_UA, trust_env=False) as client:
+        with http_client(timeout=10.0, headers=HEADERS_UA) as client:
             res = client.get(url)
         data = res.json()
     except httpx.HTTPError as exc:
@@ -125,7 +126,7 @@ def public_kline_bars(symbol: str, interval: str = "1d", limit: int = 500) -> li
         f"&interval={interval}&limit={max(20, min(int(limit), 1500))}"
     )
     try:
-        with httpx.Client(timeout=12.0, headers=HEADERS_UA, trust_env=False) as client:
+        with http_client(timeout=12.0, headers=HEADERS_UA) as client:
             res = client.get(url)
         data = res.json()
     except Exception:
@@ -193,7 +194,7 @@ def public_kline_bars_covering(
     out: list[dict] = []
     cursor = start_ms
     seen: set[int] = set()
-    with httpx.Client(timeout=20.0, headers=HEADERS_UA, trust_env=False) as client:
+    with http_client(timeout=20.0, headers=HEADERS_UA) as client:
         for _ in range(40):  # 上限约 40*1500 根，防止死循环
             if cursor > end_ms:
                 break
@@ -252,7 +253,7 @@ def _get(base: str, path: str, key: str, secret: str, params: dict) -> list | di
     query = urlencode(payload, doseq=True)
     url = f"{base}{path}?{query}&signature={_sign(secret, query)}"
     try:
-        with httpx.Client(timeout=20.0, headers={**HEADERS_UA, "X-MBX-APIKEY": key}, trust_env=False) as client:
+        with http_client(timeout=20.0, headers={**HEADERS_UA, "X-MBX-APIKEY": key}) as client:
             res = client.get(url)
     except httpx.HTTPError as exc:
         raise BinanceError(f"无法连接币安：{exc}") from exc

@@ -18,6 +18,7 @@ import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.http_outbound import http_client
 from app.models import CryptoNewsPush, DailyWatch, StockNewsPush
 from app.services.crypto_news import _parse_rss
 from app.services.notify import _pack_results, send_all
@@ -364,7 +365,7 @@ def collect(profile: Profile, accounts: list[str]) -> dict:
     feeds = list(profile.feeds) + (profile.extra_feeds() if profile.extra_feeds else [])
 
     def fetch():
-        with httpx.Client(timeout=8.0, headers=HEADERS, trust_env=False, follow_redirects=True) as client:
+        with http_client(timeout=8.0, headers=HEADERS, follow_redirects=True) as client:
             web, web_status = _fetch_web(client, feeds)
             x_items, x_status = _fetch_x(client, accounts)
         return {"items": x_items + web, "sources": {**x_status, **web_status}, "at": time.time()}

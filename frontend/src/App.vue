@@ -54,7 +54,6 @@ import PortfolioPage from './components/PortfolioPage.vue'
 import RiskPortfoliosPage from './components/RiskPortfoliosPage.vue'
 import BudgetModelPage from './components/BudgetModelPage.vue'
 import KakeyaModelPage from './components/KakeyaModelPage.vue'
-import LiveTapePage from './components/LiveTapePage.vue'
 import BoardCalendar from './components/BoardCalendar.vue'
 
 const RANGE_OPTIONS = [
@@ -118,7 +117,8 @@ const STOCK_NAV = [
   { key: 'stockJournal', label: '股票日志', perm: 'menu.stockJournal' },
   { key: 'fearVix', label: '恐慌指标', perm: 'menu.fearVix' },
   { key: 'news', label: '新闻', perm: 'menu.news' },
-  { key: 'live', label: '实时播报', perm: 'menu.live' },
+  // 实时播报已并入股票列表（开盘日轮询）；保留 key 仅作旧书签兼容跳转
+  { key: 'live', label: '实时播报', perm: 'menu.live', hidden: true },
 ]
 const CRYPTO_NAV = [
   { key: 'cryptoMarket', label: '币列表', perm: 'menu.cryptoMarket' },
@@ -991,7 +991,7 @@ onUnmounted(() => {
     <StockWatchPage v-else-if="view === 'stockWatch'" />
     <OptionsPage v-else-if="view === 'options'" :initial-symbol="stockToolSymbol" />
     <RegressionScreenerPage v-else-if="view === 'regression'" :initial-symbol="stockToolSymbol" />
-    <DailyWatchPage v-else-if="view === 'dailyWatch'" @open-analysis="view = 'dailyWatchAnalysis'" @open-detail="openStockDetail" />
+    <DailyWatchPage v-else-if="view === 'dailyWatch' || view === 'live'" @open-analysis="view = 'dailyWatchAnalysis'" @open-detail="openStockDetail" />
     <StockDetailPage v-else-if="view === 'stockDetail' && detailStock" :stock="detailStock" @back="view = detailBackView" @more-financials="symbol => openStockTool('fundamentals', symbol)">
       <template v-if="['earningsStocks', 'stockScreener'].includes(detailBackView) && can('btn.daily_watch.write')" #actions>
         <button
@@ -1018,7 +1018,6 @@ onUnmounted(() => {
     <IntradayScanPage v-else-if="view === 'intraday'" />
     <AlertsPage v-else-if="view === 'alerts' && pushTab === 'list'" />
     <RecipientsPage v-else-if="view === 'alerts' && pushTab === 'people'" />
-    <LiveTapePage v-else-if="view === 'live'" />
 
     <template v-else-if="view === 'board'">
       <div class="range-row">

@@ -1,6 +1,7 @@
 <script setup>
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { api } from '../api'
+import { armQuoteTimer, clearQuoteTimer } from '../marketHours'
 
 const emit = defineEmits(['open-analysis', 'open-detail'])
 
@@ -26,6 +27,10 @@ const listOk = ref('')
 const listError = ref('')
 const lookupLoading = ref(false)
 const refreshingMap = reactive({})
+const liveQuotes = ref({})
+const marketSession = ref(null)
+const quoteHint = ref('')
+let quoteTimer = null
 
 const indDialog = ref(false)
 const indCatalog = ref({ items: [], groups: [] })
@@ -114,8 +119,46 @@ const filtered = computed(() => {
   })
 })
 
+function rememberQuote(map, key, quote) {
+  if (!key || !quote) return
+  map[String(key).toUpperCase()] = quote
+}
+
+function liveQuote(row) {
+  const sym = String(row?.symbol || '').toUpperCase()
+  return liveQuotes.value[sym] || null
+}
+
+function displayPrice(row) {
+  const px = liveQuote(row)?.price
+  return px == null ? row.current_price : px
+}
+
+function displayChange(row) {
+  const quote = liveQuote(row)
+  if (quote?.day_pct != null && Number.isFinite(Number(quote.day_pct))) return Number(quote.day_pct)
+  const px = displayPrice(row)
+  const prev = Number(row.prev_close)
+  if (px == null || !prev) return null
+  return (Number(px) / prev - 1) * 100
+}
+
+function sessionLabel(row) {
+  return liveQuote(row)?.session_label || marketSession.value?.label || ''
+}
+
+function sessionKey(row) {
+  return liveQuote(row)?.session || marketSession.value?.key || ''
+}
+
 function num(v) {
   return v === null || v === undefined || Number.isNaN(Number(v)) ? '—' : Number(v).toFixed(2)
+}
+
+function changeText(v) {
+  if (v == null || Number.isNaN(Number(v))) return '—'
+  const n = Number(v)
+  return `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`
 }
 
 async function runLookup() {
@@ -328,10 +371,49 @@ async function load() {
   listError.value = ''
   try {
     rows.value = await api.dailyWatches()
+    await loadQuotes()
   } catch (e) {
     listError.value = e.message
   } finally {
     loading.value = false
+  }
+}
+
+async function loadQuotes() {
+  const items = (rows.value || [])
+    .map((row) => {
+      const symbol = String(row.symbol || '').trim().toUpperCase()
+      if (!symbol) return null
+      return { symbol, name: symbol, source: 'tradingview' }
+    })
+    .filter(Boolean)
+  clearQuoteTimer(quoteTimer)
+  quoteTimer = null
+  if (!items.length) {
+    liveQuotes.value = {}
+    quoteHint.value = ''
+    return
+  }
+  try {
+    const data = await api.quotes(items)
+    const map = {}
+    marketSession.value = data?.market || null
+    ;(data?.quotes || []).forEach((quote, index) => {
+      const item = items[index]
+      rememberQuote(map, quote.symbol, quote)
+      rememberQuote(map, quote.requested, quote)
+      rememberQuote(map, quote.name, quote)
+      if (item?.symbol) rememberQuote(map, item.symbol, quote)
+    })
+    liveQuotes.value = map
+    const label = marketSession.value?.label || '行情'
+    quoteHint.value = marketSession.value?.live
+      ? `美股${label}，约 30 秒自动刷新`
+      : `美股${label}，休市时暂停轮询`
+  } catch (e) {
+    quoteHint.value = e.message || '行情拉取失败'
+  } finally {
+    quoteTimer = armQuoteTimer(loadQuotes, marketSession.value)
   }
 }
 
@@ -462,6 +544,7 @@ async function refreshAll() {
 }
 
 onMounted(load)
+onUnmounted(() => clearQuoteTimer(quoteTimer))
 </script>
 
 <template>
@@ -557,7 +640,10 @@ onMounted(load)
   </template>
 
   <template v-else>
-    <p class="goal-lead">一只股票一行，全部手动记录，每天看盘后自己更新，方便挂单前快速参考。</p>
+    <p class="goal-lead">
+      股票列表与实时行情合并：开盘日自动轮询列表标的现价（盘前 / 盘中 / 盘后）。手动字段仍可在编辑或详情里维护，方便挂单前快速参考。
+      <span v-if="quoteHint" class="sub"> · {{ quoteHint }}</span>
+    </p>
     <div class="range-row">
       <div class="watch-edit" style="flex: 1; margin: 0">
         <input v-model="search" placeholder="搜索代码" />
@@ -566,6 +652,7 @@ onMounted(load)
         <option value="">全部板块</option>
         <option v-for="s in SECTORS" :key="s" :value="s">{{ s }}</option>
       </select>
+      <button class="btn" type="button" :disabled="loading" title="立即刷新实时行情" @click="loadQuotes">刷新行情</button>
       <button class="btn" type="button" :disabled="bulkUpdating || !filtered.length" title="逐支更新价格/期权/回归线，跟点每一行的按钮效果一样，删除和改不受影响" @click="refreshAll">
         {{ bulkUpdating ? `更新中 ${bulkProgress.done}/${bulkProgress.total}…` : '一键更新' }}
       </button>
@@ -588,6 +675,8 @@ onMounted(load)
               <th>昨低</th>
               <th>昨高</th>
               <th>现价</th>
+              <th>涨跌</th>
+              <th>时段</th>
               <th>隐含区间</th>
               <th>回归线</th>
               <th>Max Pain</th>
@@ -607,7 +696,15 @@ onMounted(load)
               <td class="mono">{{ num(row.prev_open) }}</td>
               <td class="mono">{{ num(row.prev_low) }}</td>
               <td class="mono">{{ num(row.prev_high) }}</td>
-              <td class="mono">{{ num(row.current_price) }}</td>
+              <td class="mono">
+                {{ num(displayPrice(row)) }}
+                <span v-if="liveQuote(row)?.price != null" class="sub"> · 实时</span>
+              </td>
+              <td class="mono" :class="(displayChange(row) || 0) >= 0 ? 'up' : 'down'">{{ changeText(displayChange(row)) }}</td>
+              <td>
+                <span v-if="sessionLabel(row)" class="session-tag" :class="sessionKey(row)">{{ sessionLabel(row) }}</span>
+                <span v-else class="sub">—</span>
+              </td>
               <td class="mono">
                 <template v-if="row.gamma_low != null || row.gamma_high != null">
                   {{ num(row.gamma_low) }} ~ {{ num(row.gamma_high) }}

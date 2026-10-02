@@ -9,7 +9,8 @@ from sqlalchemy.orm import Session, object_session
 from app.models import Position, Side, Strategy, TradeLog
 from app.services.tags import get_or_create_tags
 
-PLATFORMS = {"众安", "币安"}
+PLATFORMS = {"众安", "币安", "OKX"}
+CRYPTO_PLATFORMS = {"币安", "OKX"}
 STATUSES = ("未开始", "开始", "已结束")
 STATUS_ORDER = {name: i for i, name in enumerate(STATUSES)}
 
@@ -23,11 +24,15 @@ def _trade_symbol(name: str) -> str:
     return (compact or name)[:16]
 
 
+def is_crypto_platform(platform: str | None) -> bool:
+    return str(platform or "").strip() in CRYPTO_PLATFORMS
+
+
 def quote_spec(name: str, platform: str) -> tuple[str, str]:
     from app.services.binance import looks_like_crypto, normalize_symbol
 
     compact = re.sub(r"[^A-Za-z0-9.]", "", name).upper()
-    if looks_like_crypto(compact) or platform == "币安":
+    if looks_like_crypto(compact) or is_crypto_platform(platform):
         return normalize_symbol(compact), "binance"
     return compact, "tradingview"
 
@@ -80,10 +85,14 @@ def to_out(row: Position) -> dict:
     quote_symbol, quote_source = quote_spec(row.name, row.platform)
     strategy_id = getattr(row, "strategy_id", None)
     strategy_name = None
+    strategy_side = None
     if strategy_id:
         db = object_session(row)
         plan = db.get(Strategy, strategy_id) if db else None
-        strategy_name = plan.name if plan else None
+        if plan:
+            strategy_name = plan.name
+            raw_side = str(getattr(plan, "side", None) or "long").strip().lower()
+            strategy_side = "short" if raw_side in ("short", "做空", "空") else "long"
     return {
         "id": row.id,
         "platform": row.platform,
@@ -105,6 +114,7 @@ def to_out(row: Position) -> dict:
         "close_reason": getattr(row, "close_reason", None),
         "strategy_id": strategy_id,
         "strategy_name": strategy_name,
+        "strategy_side": strategy_side,
         "trade_id": row.trade_id,
         "holding_days": _holding_days(row.opened_on, row.closed_on, row.status),
         "pnl_amount": pnl_amount,
@@ -163,10 +173,10 @@ def create_position(
 ) -> Position:
     from app.services.binance import looks_like_crypto
 
-    if looks_like_crypto(name) and platform != "币安":
+    if looks_like_crypto(name) and not is_crypto_platform(platform):
         platform = "币安"
     if platform not in PLATFORMS:
-        raise PositionError("平台只能是众安或币安")
+        raise PositionError("平台只能是众安、币安或 OKX")
     if status not in {"未开始", "开始"}:
         raise PositionError("状态只能是未开始或开始")
     if fee < 0:
@@ -205,11 +215,11 @@ def update_position(db: Session, row: Position, data: dict) -> Position:
         name = str(data["name"]).strip()
         if looks_like_crypto(name):
             data["name"] = name.upper()
-            data.setdefault("platform", "币安")
-            if data.get("platform") != "币安":
+            current = data.get("platform", row.platform)
+            if not is_crypto_platform(current):
                 data["platform"] = "币安"
     if "platform" in data and data["platform"] not in PLATFORMS:
-        raise PositionError("平台只能是众安或币安")
+        raise PositionError("平台只能是众安、币安或 OKX")
     if "name" in data and data["name"]:
         data["name"] = data["name"].strip()
     new_status = data.pop("status", row.status)

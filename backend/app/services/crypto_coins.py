@@ -39,7 +39,8 @@ def to_out(row: CryptoCoin, *, with_quote: bool = False) -> dict:
 def list_out(rows: list[CryptoCoin], *, with_quote: bool = False) -> list[dict]:
     items = [_base_out(r) for r in rows]
     if with_quote:
-        return enrich_coin_rows(items)
+        # 列表不拉均线，避免 N 次 K 线串行拖死 worker
+        return enrich_coin_rows(items, with_ma=False)
     return items
 
 

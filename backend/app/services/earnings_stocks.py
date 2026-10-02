@@ -9,6 +9,7 @@ from urllib.parse import quote
 
 import httpx
 
+from app.http_outbound import http_client
 from app.services.daily_watch import SECTORS
 from app.services.fundamentals import NASDAQ_HEADERS, _get, _num
 
@@ -76,7 +77,7 @@ def _parse_time_label(raw: str | None) -> str:
 
 def _calendar_day(day: date) -> list[dict]:
     try:
-        with httpx.Client(timeout=14.0, headers=NASDAQ_HEADERS, follow_redirects=True, trust_env=False) as client:
+        with http_client(timeout=14.0, headers=NASDAQ_HEADERS, follow_redirects=True) as client:
             raw = _get(client, f"/api/calendar/earnings?date={day.isoformat()}")
     except Exception:
         return []
@@ -189,7 +190,7 @@ def _quote_one(symbol: str) -> dict:
         "industry": None,
     }
     try:
-        with httpx.Client(timeout=10.0, headers=NASDAQ_HEADERS, follow_redirects=True, trust_env=False) as client:
+        with http_client(timeout=10.0, headers=NASDAQ_HEADERS, follow_redirects=True) as client:
             # summary 一份同时有 Sector + PreviousClose，少打一轮
             summary = _get(client, f"/api/quote/{quote(symbol, safe='')}/summary?assetclass=stocks")
             sd = summary.get("summaryData") if isinstance(summary, dict) else {}
