@@ -195,6 +195,81 @@ const outcomeRanges = computed(() => {
     down: build(matches.value.map((item) => Number(item.outcome)).filter((value) => value < -1)),
   }
 })
+const decisionSupport = computed(() => {
+  const currentPrice = paperEntryPrice.value
+  const up = outcomeRanges.value.up
+  const down = outcomeRanges.value.down
+  const samples = sampleCount.value
+  const account = Number(paperTotalAmount.value || 0)
+  const available = Number(paperAvailableUsdt.value || 0)
+  const upRate = Number(upProbability.value || 0) / 100
+  const downRate = Number(downProbability.value || 0) / 100
+  const upMedian = Number(up?.median || 0)
+  const downMedian = Number(down?.median || 0)
+  const expectedReturn = upRate * upMedian + downRate * downMedian - 0.2
+  const targetPrice = Number(up?.priceMedian || 0)
+  const stopPrice = Number(down?.priceMedian || 0)
+  const desiredRiskReward = 2
+  const maxEntryPrice = targetPrice > stopPrice
+    ? (targetPrice + desiredRiskReward * stopPrice) / (desiredRiskReward + 1)
+    : 0
+  const entryLow = maxEntryPrice > 0 ? Math.max(stopPrice, maxEntryPrice * 0.988) : 0
+  const riskPerUnit = Math.max(0, maxEntryPrice - stopPrice)
+  const rewardPerUnit = Math.max(0, targetPrice - maxEntryPrice)
+  const riskReward = riskPerUnit > 0 ? rewardPerUnit / riskPerUnit : 0
+  const maxRisk = account * 0.01
+  const riskSizedQuantity = riskPerUnit > 0 ? maxRisk / riskPerUnit : 0
+  const capitalCap = Math.min(available, account * 0.25)
+  const capitalSizedQuantity = maxEntryPrice > 0 ? capitalCap / maxEntryPrice : 0
+  const quantity = Math.max(0, Math.min(riskSizedQuantity, capitalSizedQuantity))
+  const notional = quantity * maxEntryPrice
+  const estimatedRisk = quantity * riskPerUnit
+  const estimatedProfit = quantity * rewardPerUnit
+  const breakEvenProbability = riskReward > 0 ? 100 / (1 + riskReward) : 100
+  const confidence = samples >= 50 ? '高' : samples >= 30 ? '中' : '低'
+  const priceReady = currentPrice > 0 && maxEntryPrice > 0 && currentPrice <= maxEntryPrice
+  const directionReady = compositeDirection.value === '看涨' && Number(compositeScore.value) >= 55
+  const sampleReady = samples >= 20
+  const valueReady = expectedReturn > 0 && riskReward >= 1.5 && Number(upProbability.value) > breakEvenProbability
+
+  let verdict = '观察'
+  let reason = '等待完成历史匹配后再生成资金计划。'
+  let allocation = 0
+  if (!samples || !up || !down) reason = '上涨或下跌案例不足，暂时不能形成完整的价格计划。'
+  else if (!sampleReady) reason = `只有 ${samples} 个独立案例，低于 20 个最低门槛，不建议用本金试单。`
+  else if (!directionReady) reason = `综合方向为${compositeDirection.value}，尚未形成明确的现货看涨条件。`
+  else if (!valueReady) reason = `扣除约 0.2% 双边费用后的历史期望为 ${signed(expectedReturn)}%，收益风险条件不合格。`
+  else if (!priceReady) reason = `当前价 ${displayPrice(currentPrice)} 高于计划买入上限 ${displayPrice(maxEntryPrice)}，等待回落后重新匹配。`
+  else if (samples >= 30 && Number(compositeScore.value) >= 60) {
+    verdict = '可以执行'
+    reason = '样本、方向、价格和收益风险条件同时通过；仍应按止损控制单笔风险。'
+    allocation = notional
+  } else {
+    verdict = '小仓试单'
+    reason = '基本条件通过，但样本或综合置信度仍有限，只建议使用风险预算内的小仓位。'
+    allocation = notional * 0.5
+  }
+
+  const allocationScale = allocation / Math.max(notional, 0.00000001)
+  return {
+    verdict,
+    reason,
+    confidence,
+    entryLow,
+    entryHigh: maxEntryPrice,
+    targetPrice,
+    stopPrice,
+    expectedReturn,
+    riskReward,
+    breakEvenProbability,
+    maxRisk,
+    quantity: maxEntryPrice > 0 ? allocation / maxEntryPrice : 0,
+    notional: allocation,
+    estimatedRisk: allocation ? estimatedRisk * allocationScale : 0,
+    estimatedProfit: allocation ? estimatedProfit * allocationScale : 0,
+    actionable: allocation > 0,
+  }
+})
 const visibleBarCount = computed(() => {
   if (!bars.value.length) return 0
   return Math.max(1, Math.round(bars.value.length * (chartZoom.value[1] - chartZoom.value[0]) / 100))
@@ -763,6 +838,16 @@ function submitSpotOrder() {
   return sellSpotQuantity()
 }
 
+function applyDecisionToPaperTrade() {
+  if (!decisionSupport.value.actionable) return
+  spotAction.value = 'buy'
+  spotInputMode.value = 'amount'
+  paperNotional.value = Number(Math.min(decisionSupport.value.notional, paperAvailableUsdt.value).toFixed(2))
+  autoSellEnabled.value = true
+  spotSellPrice.value = roundedPrice(decisionSupport.value.targetPrice)
+  ElMessage.success('已把建议投入和止盈价填入现货模拟盘，请确认后再提交')
+}
+
 async function sellPaperTrade(item) {
   if (closingTradeId.value) return
   closingTradeId.value = item.id
@@ -947,6 +1032,34 @@ onUnmounted(() => {
               <p v-else>当前没有足够的看跌案例可计算区间</p>
             </article>
           </div>
+          <section class="decision-support" aria-labelledby="decision-support-title">
+            <div class="decision-heading">
+              <div>
+                <span class="eyebrow">资金决策辅助</span>
+                <h3 id="decision-support-title">{{ decisionSupport.verdict }}</h3>
+                <p>{{ decisionSupport.reason }}</p>
+              </div>
+              <div class="decision-confidence"><span>置信度</span><b>{{ decisionSupport.confidence }}</b><small>{{ sampleCount }} 个独立案例</small></div>
+            </div>
+            <div class="decision-plan">
+              <div><span>参考买入区间</span><b>{{ decisionSupport.entryHigh ? `${displayPrice(decisionSupport.entryLow)} ～ ${displayPrice(decisionSupport.entryHigh)}` : '—' }}</b><small>达到价格后应重新匹配确认</small></div>
+              <div><span>参考止盈</span><b class="positive">{{ decisionSupport.targetPrice ? displayPrice(decisionSupport.targetPrice) : '—' }}</b><small>看涨案例后续中位价格</small></div>
+              <div><span>参考止损</span><b class="negative">{{ decisionSupport.stopPrice ? displayPrice(decisionSupport.stopPrice) : '—' }}</b><small>看跌案例后续中位价格</small></div>
+              <div><span>建议投入</span><b>{{ decisionSupport.actionable ? `${decisionSupport.notional.toFixed(2)} USDT` : '0 USDT' }}</b><small>账户 {{ paperTotalAmount.toFixed(2) }} USDT · 单笔风险上限 1%</small></div>
+              <div><span>理论期望</span><b :class="decisionSupport.expectedReturn > 0 ? 'positive' : 'negative'">{{ signed(decisionSupport.expectedReturn) }}%</b><small>按历史上涨/下跌中位数，已扣约 0.2% 双边费用</small></div>
+              <div><span>收益风险比</span><b>{{ decisionSupport.riskReward ? `${decisionSupport.riskReward.toFixed(2)} : 1` : '—' }}</b><small>保本所需胜率约 {{ decisionSupport.breakEvenProbability.toFixed(1) }}%</small></div>
+            </div>
+            <div class="decision-risk-line">
+              <span>最大风险 <b>{{ decisionSupport.actionable ? decisionSupport.estimatedRisk.toFixed(2) : decisionSupport.maxRisk.toFixed(2) }} USDT</b></span>
+              <span>目标利润 <b class="positive">{{ decisionSupport.actionable ? decisionSupport.estimatedProfit.toFixed(2) : '—' }} USDT</b></span>
+              <span>建议数量 <b>{{ decisionSupport.actionable ? decisionSupport.quantity.toFixed(6) : '0.000000' }} {{ symbol.replace('USDT', '') }}</b></span>
+              <div class="decision-actions">
+                <el-button :disabled="!decisionSupport.actionable" @click="applyDecisionToPaperTrade">按建议填入模拟盘</el-button>
+                <el-button :loading="studySaving" :disabled="!sampleCount || studySaving" @click="saveCurrentStudy">保存本次决策</el-button>
+              </div>
+            </div>
+            <p class="decision-disclaimer">这是基于历史样本与预设风险规则生成的模拟决策，不是收益保证。价格触发后必须重新匹配；真实成交还会受到滑点、流动性和突发事件影响。</p>
+          </section>
           <p class="range-method">区间只统计同一批匹配案例在后续 {{ horizonLabel }} 的真实收盘结果；排除最高和最低的极端 25%，不是止盈或止损保证。</p>
         </section>
 
@@ -1074,7 +1187,7 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.pattern-page { display: flex; flex-direction: column; gap: 14px; }
+.pattern-page { display: flex; flex-direction: column; gap: 14px; width: 100%; min-width: 0; overflow: hidden; }
 .analysis-toolbar, .settings-band, .score-strip { display: flex; align-items: center; gap: 18px; border: 1px solid var(--line); background: var(--bg-elev); padding: 14px 16px; border-radius: 8px; }
 .field-group { display: flex; align-items: center; gap: 9px; }
 .field-group label, .setting-label { color: var(--muted); font-size: 12px; }
@@ -1121,7 +1234,8 @@ onUnmounted(() => {
 .confidence small { color: var(--faint); font-size: 10px; line-height: 1.4; }
 .positive { color: var(--up); }
 .negative { color: var(--down); }
-.result-grid { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(280px, .75fr); gap: 14px; }
+.result-grid { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(280px, .75fr); gap: 14px; min-width: 0; }
+.probability-section, .breakdown-section { min-width: 0; overflow: hidden; }
 .probability-chart { height: 310px; }
 .outcome-ranges { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .range-card { position: relative; display: flex; flex-direction: column; gap: 6px; min-height: 150px; padding: 14px; border: 1px solid var(--line); background: #0a0f16; }
@@ -1136,6 +1250,24 @@ onUnmounted(() => {
 .range-card p { margin: 0; color: var(--muted); font-size: 10px; }
 .range-card small { color: var(--text); font: 11px/1.55 var(--mono); }
 .range-card em { margin-top: auto; color: var(--faint); font-size: 10px; font-style: normal; }
+.decision-support { margin-top: 14px; padding: 16px; border: 1px solid rgba(122,162,255,.3); background: rgba(122,162,255,.055); }
+.decision-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.decision-heading .eyebrow { color: var(--accent); font-size: 10px; }
+.decision-heading h3 { margin: 4px 0 0; font-size: 24px; letter-spacing: 0; }
+.decision-heading p { max-width: 650px; margin: 7px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.decision-confidence { display: grid; justify-items: end; gap: 3px; white-space: nowrap; }
+.decision-confidence span, .decision-confidence small { color: var(--faint); font-size: 10px; }
+.decision-confidence b { font: 700 19px/1.2 var(--mono); color: var(--warn); }
+.decision-plan { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.decision-plan > div { display: grid; gap: 6px; min-width: 0; padding: 14px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.decision-plan > div:nth-child(3n) { border-right: 0; }
+.decision-plan span { color: var(--muted); font-size: 10px; }
+.decision-plan b { overflow-wrap: anywhere; font: 700 16px/1.2 var(--mono); }
+.decision-plan small { color: var(--faint); font-size: 9px; line-height: 1.45; }
+.decision-risk-line { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; padding-top: 14px; color: var(--muted); font-size: 10px; }
+.decision-risk-line b { color: var(--text); font-family: var(--mono); }
+.decision-actions { display: flex; gap: 8px; margin-left: auto; }
+.decision-disclaimer { margin: 12px 0 0; color: var(--faint); font-size: 9px; line-height: 1.55; }
 .range-method { margin: 10px 0 0; color: var(--faint); font-size: 10px; line-height: 1.55; }
 .index-verdict { display: flex; align-items: end; justify-content: space-between; padding: 12px 0 16px; border-bottom: 1px solid var(--line); }
 .index-verdict > div { display: flex; align-items: baseline; gap: 10px; }
@@ -1165,6 +1297,12 @@ onUnmounted(() => {
 .news-evidence p { margin: 0; font-size: 10px; line-height: 1.45; }
 @media (max-width: 760px) {
   .outcome-ranges { grid-template-columns: 1fr; }
+  .decision-heading { flex-direction: column; }
+  .decision-confidence { justify-items: start; }
+  .decision-plan { grid-template-columns: 1fr; }
+  .decision-plan > div { border-right: 0; }
+  .decision-actions { width: 100%; margin-left: 0; }
+  .decision-actions .el-button { flex: 1; margin-left: 0; }
 }
 .research-actions { display: grid; grid-template-columns: minmax(180px,.55fr) minmax(0,2.45fr); align-items: start; gap: 20px; padding: 16px 18px; border: 1px solid rgba(122,162,255,.3); background: rgba(122,162,255,.06); }
 .research-actions h2 { margin: 0; font-size: 15px; }
