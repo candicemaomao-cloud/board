@@ -47,12 +47,17 @@ const orderSubmitting = ref(false)
 const closingTradeId = ref(null)
 const marketTransport = ref('NAS 后端')
 const newsAnalysis = ref(null)
+const livePrice = ref(0)
+const livePriceChange = ref(null)
+const livePriceUpdatedAt = ref(null)
+const livePriceSource = ref('Binance')
 
 const SAMPLE_SYMBOLS = ['OPUSDT', 'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT']
 const BINANCE_SPOT_URLS = ['https://api.binance.com', 'https://data-api.binance.vision']
 
 let priceChart = null
 let probabilityChart = null
+let livePriceTimer = null
 
 const symbols = computed(() => coinRows.value.map((row) => row.binance_symbol || `${row.symbol}USDT`))
 const intervals = [
@@ -67,6 +72,7 @@ const intervals = [
 const intervalLabel = computed(() => intervals.find((x) => x.value === interval.value)?.label || interval.value)
 const horizonLabel = computed(() => `${horizon.value} 根 = ${horizon.value} × ${intervalLabel.value}`)
 const paperEntryPrice = computed(() => Number(bars.value.at(-1)?.close || 0))
+const currentMarketPrice = computed(() => Number(livePrice.value || paperEntryPrice.value || 0))
 const spotQuantity = computed(() => spotInputMode.value === 'quantity'
   ? Number(spotQuantityInput.value || 0)
   : paperEntryPrice.value > 0 ? Number(paperNotional.value) / paperEntryPrice.value : 0)
@@ -179,7 +185,7 @@ const outcomeRanges = computed(() => {
     const low = quantile(values, 0.25)
     const high = quantile(values, 0.75)
     const median = quantile(values, 0.5)
-    const price = paperEntryPrice.value
+    const price = currentMarketPrice.value
     return {
       count: values.length,
       low,
@@ -196,7 +202,7 @@ const outcomeRanges = computed(() => {
   }
 })
 const decisionSupport = computed(() => {
-  const currentPrice = paperEntryPrice.value
+  const currentPrice = currentMarketPrice.value
   const up = outcomeRanges.value.up
   const down = outcomeRanges.value.down
   const samples = sampleCount.value
@@ -270,6 +276,58 @@ const decisionSupport = computed(() => {
     actionable: allocation > 0,
   }
 })
+const strategyPlans = computed(() => {
+  const price = currentMarketPrice.value
+  const up = outcomeRanges.value.up
+  const down = outcomeRanges.value.down
+  if (!price || !up || !down) return null
+
+  const recent = bars.value.slice(-15)
+  const recentHigh = Math.max(...recent.map((row) => Number(row.high || 0)))
+  const averageRangePct = mean(recent.map((row) => Number(row.open) > 0
+    ? (Number(row.high) - Number(row.low)) / Number(row.open) * 100
+    : 0).filter(Number.isFinite)) || 1
+  const bufferPct = Math.min(1.5, Math.max(0.15, averageRangePct * 0.15))
+  const dipEntryLow = Math.min(down.priceLow, down.priceMedian)
+  const dipEntryHigh = Math.max(down.priceLow, down.priceMedian)
+  const reboundPct = Math.min(5, Math.max(1, Math.abs(Number(down.median)) * 0.35))
+  const dipTarget = Math.min(price, down.priceMedian * (1 + reboundPct / 100))
+  const dipStop = down.priceLow * (1 - bufferPct / 100)
+  const breakoutEntry = Math.max(price, recentHigh) * (1 + bufferPct / 100)
+  const momentumTarget = Math.max(up.priceMedian, breakoutEntry * (1 + Math.max(1, Number(up.median)) / 100))
+  const momentumStop = Math.min(price, breakoutEntry * (1 - Math.max(1, averageRangePct) / 100))
+  const downDominant = Number(downProbability.value) > Number(upProbability.value)
+  const bullishReady = compositeDirection.value === '看涨' && Number(compositeScore.value) >= 60 && !downDominant
+
+  return {
+    headline: downDominant ? '等待回撤，不追涨' : bullishReady ? '等待突破确认后小仓跟随' : '保持观察，等待方向确认',
+    summary: downDominant
+      ? `历史样本中看跌 ${downProbability.value}% 高于看涨 ${upProbability.value}%，先等价格进入回撤区并出现止跌 K 线，再考虑现货买入。`
+      : bullishReady
+        ? `综合指数与历史概率偏多，但必须突破近期高点并站稳，避免在假突破中追高。`
+        : `当前因子尚未形成一致方向，不建议只凭单一概率或新闻下单。`,
+    dip: {
+      entryLow: dipEntryLow,
+      entryHigh: dipEntryHigh,
+      target: dipTarget,
+      stop: dipStop,
+      trigger: `进入区间后，等待 1 根 ${intervalLabel.value} K 线收盘转强或成交量止跌`,
+    },
+    momentum: {
+      entry: breakoutEntry,
+      target: momentumTarget,
+      stop: momentumStop,
+      trigger: `价格突破近 15 根高点并收盘站稳，且综合指数仍不低于 60%`,
+    },
+  }
+})
+const strategyEvidence = computed(() => [
+  { source: 'Binance 现货 OHLCV', status: '已接入', result: `${symbol.value} 实时价与 ${intervalLabel.value} K 线、成交量；历史匹配只使用已收盘 K 线。` },
+  { source: '跨币种历史样本', status: '已接入', result: `${samplePools.value.map((pool) => pool.symbol).join('、') || '加载中'}，共 ${sampleBarCount.value.toLocaleString()} 根。` },
+  { source: '技术与量价', status: '已接入', result: '价格结构、成交量变化、波动区间与尾部风险已进入综合指数。' },
+  { source: '事件新闻', status: weightedNews.value.sampleSize ? '已接入' : '暂无数据', result: `系统已分析 ${weightedNews.value.sampleSize} 条新闻，按方向、时效和事件等级加权。` },
+  { source: '纳指 / 原油 / 利率 / 日元', status: '待接入', result: '采纳为宏观过滤器思路；当前没有专门实时行情，不参与本次分数，避免伪造结论。' },
+])
 const visibleBarCount = computed(() => {
   if (!bars.value.length) return 0
   return Math.max(1, Math.round(bars.value.length * (chartZoom.value[1] - chartZoom.value[0]) / 100))
@@ -335,6 +393,34 @@ async function fetchSpotBars(targetSymbol, targetInterval, limit) {
     }
   }
   throw lastError || new Error(`拉不到 ${targetSymbol} 的 Binance 现货 K 线`)
+}
+
+async function refreshLivePrice() {
+  let lastError = null
+  for (const base of BINANCE_SPOT_URLS) {
+    try {
+      const response = await fetch(`${base}/api/v3/ticker/24hr?symbol=${encodeURIComponent(symbol.value)}`)
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const ticker = await response.json()
+      livePrice.value = Number(ticker.lastPrice || 0)
+      livePriceChange.value = Number(ticker.priceChangePercent || 0)
+      livePriceUpdatedAt.value = new Date()
+      livePriceSource.value = 'Binance 实时行情'
+      return
+    } catch (error) {
+      lastError = error
+    }
+  }
+  livePrice.value = paperEntryPrice.value
+  livePriceSource.value = lastError ? '最新 K 线价格（实时接口暂不可用）' : '最新 K 线价格'
+}
+
+function restartLivePricePolling() {
+  if (livePriceTimer) window.clearInterval(livePriceTimer)
+  livePrice.value = 0
+  livePriceChange.value = null
+  refreshLivePrice()
+  livePriceTimer = window.setInterval(refreshLivePrice, 5000)
 }
 
 async function loadSpotData(coinId) {
@@ -882,17 +968,20 @@ watch(horizon, () => {
 })
 watch(paperSide, resetPaperTargets)
 watch([symbol, interval], loadMarket)
+watch(symbol, restartLivePricePolling)
 watch(mode, () => {
   analysisDirty.value = true
   runStatus.value = '匹配模式已改变，请重新匹配'
 })
 onMounted(() => {
   loadMarket()
+  restartLivePricePolling()
   loadResearchRecords()
   loadNewsAnalysis()
   window.addEventListener('resize', resizeCharts)
 })
 onUnmounted(() => {
+  if (livePriceTimer) window.clearInterval(livePriceTimer)
   window.removeEventListener('resize', resizeCharts)
   priceChart?.dispose()
   probabilityChart?.dispose()
@@ -903,6 +992,17 @@ onUnmounted(() => {
 
 <template>
   <div class="pattern-page">
+    <section class="live-price-strip" aria-live="polite">
+      <div>
+        <span>{{ symbol }} 实时价格</span>
+        <strong>{{ displayPrice(currentMarketPrice) }}</strong>
+        <b v-if="livePriceChange != null" :class="livePriceChange >= 0 ? 'positive' : 'negative'">{{ signed(livePriceChange) }}%</b>
+      </div>
+      <div class="live-price-meta">
+        <span>{{ livePriceSource }}</span>
+        <small>{{ livePriceUpdatedAt ? `${livePriceUpdatedAt.toLocaleTimeString('zh-CN', { hour12: false })} 更新 · 每 5 秒刷新` : '正在连接实时行情' }}</small>
+      </div>
+    </section>
     <section class="analysis-toolbar">
       <div class="field-group">
         <label>交易对</label>
@@ -1035,11 +1135,23 @@ onUnmounted(() => {
           <section class="decision-support" aria-labelledby="decision-support-title">
             <div class="decision-heading">
               <div>
-                <span class="eyebrow">资金决策辅助</span>
-                <h3 id="decision-support-title">{{ decisionSupport.verdict }}</h3>
-                <p>{{ decisionSupport.reason }}</p>
+                <span class="eyebrow">综合策略结论</span>
+                <h3 id="decision-support-title">{{ strategyPlans?.headline || decisionSupport.verdict }}</h3>
+                <p>{{ strategyPlans?.summary || decisionSupport.reason }}</p>
               </div>
               <div class="decision-confidence"><span>置信度</span><b>{{ decisionSupport.confidence }}</b><small>{{ sampleCount }} 个独立案例</small></div>
+            </div>
+            <div v-if="strategyPlans" class="strategy-paths">
+              <article>
+                <div><span>方案 A</span><b>回撤后买入</b></div>
+                <dl><dt>观察买入区</dt><dd>{{ displayPrice(strategyPlans.dip.entryLow) }} ～ {{ displayPrice(strategyPlans.dip.entryHigh) }}</dd><dt>短线卖出参考</dt><dd class="positive">{{ displayPrice(strategyPlans.dip.target) }}</dd><dt>失效 / 止损</dt><dd class="negative">{{ displayPrice(strategyPlans.dip.stop) }}</dd></dl>
+                <p>{{ strategyPlans.dip.trigger }}</p>
+              </article>
+              <article>
+                <div><span>方案 B</span><b>上涨突破跟随</b></div>
+                <dl><dt>突破买入参考</dt><dd>{{ displayPrice(strategyPlans.momentum.entry) }}</dd><dt>止盈参考</dt><dd class="positive">{{ displayPrice(strategyPlans.momentum.target) }}</dd><dt>失效 / 止损</dt><dd class="negative">{{ displayPrice(strategyPlans.momentum.stop) }}</dd></dl>
+                <p>{{ strategyPlans.momentum.trigger }}</p>
+              </article>
             </div>
             <div class="decision-plan">
               <div><span>参考买入区间</span><b>{{ decisionSupport.entryHigh ? `${displayPrice(decisionSupport.entryLow)} ～ ${displayPrice(decisionSupport.entryHigh)}` : '—' }}</b><small>达到价格后应重新匹配确认</small></div>
@@ -1048,6 +1160,12 @@ onUnmounted(() => {
               <div><span>建议投入</span><b>{{ decisionSupport.actionable ? `${decisionSupport.notional.toFixed(2)} USDT` : '0 USDT' }}</b><small>账户 {{ paperTotalAmount.toFixed(2) }} USDT · 单笔风险上限 1%</small></div>
               <div><span>理论期望</span><b :class="decisionSupport.expectedReturn > 0 ? 'positive' : 'negative'">{{ signed(decisionSupport.expectedReturn) }}%</b><small>按历史上涨/下跌中位数，已扣约 0.2% 双边费用</small></div>
               <div><span>收益风险比</span><b>{{ decisionSupport.riskReward ? `${decisionSupport.riskReward.toFixed(2)} : 1` : '—' }}</b><small>保本所需胜率约 {{ decisionSupport.breakEvenProbability.toFixed(1) }}%</small></div>
+            </div>
+            <div class="strategy-evidence">
+              <div class="evidence-head"><b>信息来源与本次分析</b><span>只有“已接入”的数据参与综合指数</span></div>
+              <div v-for="item in strategyEvidence" :key="item.source" class="evidence-row">
+                <b>{{ item.source }}</b><span :class="item.status === '已接入' ? 'positive' : item.status === '待接入' ? 'neutral' : ''">{{ item.status }}</span><p>{{ item.result }}</p>
+              </div>
             </div>
             <div class="decision-risk-line">
               <span>最大风险 <b>{{ decisionSupport.actionable ? decisionSupport.estimatedRisk.toFixed(2) : decisionSupport.maxRisk.toFixed(2) }} USDT</b></span>
@@ -1058,7 +1176,7 @@ onUnmounted(() => {
                 <el-button :loading="studySaving" :disabled="!sampleCount || studySaving" @click="saveCurrentStudy">保存本次决策</el-button>
               </div>
             </div>
-            <p class="decision-disclaimer">这是基于历史样本与预设风险规则生成的模拟决策，不是收益保证。价格触发后必须重新匹配；真实成交还会受到滑点、流动性和突发事件影响。</p>
+            <p class="decision-disclaimer">方案价格来自当前历史样本的分位区间和近期波动规则，不是收益保证。任何价格触发后都必须重新匹配；样本不足 20 个时仅提供观察位，不建议投入本金。</p>
           </section>
           <p class="range-method">区间只统计同一批匹配案例在后续 {{ horizonLabel }} 的真实收盘结果；排除最高和最低的极端 25%，不是止盈或止损保证。</p>
         </section>
@@ -1187,7 +1305,14 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.pattern-page { display: flex; flex-direction: column; gap: 14px; width: 100%; min-width: 0; overflow: hidden; }
+.pattern-page { display: flex; flex-direction: column; gap: 14px; width: 100%; min-width: 0; overflow: visible; }
+.live-price-strip { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 62px; padding: 10px 16px; border: 1px solid rgba(122,162,255,.42); background: rgba(8,13,20,.96); box-shadow: 0 8px 22px rgba(0,0,0,.28); backdrop-filter: blur(12px); }
+.live-price-strip > div:first-child { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.live-price-strip span { color: var(--muted); font-size: 11px; }
+.live-price-strip strong { color: var(--text); font: 700 28px/1 var(--mono); white-space: nowrap; }
+.live-price-strip b { font: 700 14px/1 var(--mono); white-space: nowrap; }
+.live-price-meta { display: grid; justify-items: end; gap: 4px; text-align: right; }
+.live-price-meta small { color: var(--faint); font-size: 9px; }
 .analysis-toolbar, .settings-band, .score-strip { display: flex; align-items: center; gap: 18px; border: 1px solid var(--line); background: var(--bg-elev); padding: 14px 16px; border-radius: 8px; }
 .field-group { display: flex; align-items: center; gap: 9px; }
 .field-group label, .setting-label { color: var(--muted); font-size: 12px; }
@@ -1264,6 +1389,22 @@ onUnmounted(() => {
 .decision-plan span { color: var(--muted); font-size: 10px; }
 .decision-plan b { overflow-wrap: anywhere; font: 700 16px/1.2 var(--mono); }
 .decision-plan small { color: var(--faint); font-size: 9px; line-height: 1.45; }
+.strategy-paths { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.strategy-paths article { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--line); background: #0a0f16; }
+.strategy-paths article > div { display: flex; align-items: center; gap: 9px; }
+.strategy-paths article > div span { padding: 3px 6px; border: 1px solid rgba(122,162,255,.35); color: var(--accent); font-size: 9px; }
+.strategy-paths article > div b { font-size: 13px; }
+.strategy-paths dl { display: grid; grid-template-columns: 1fr auto; gap: 8px 14px; margin: 0; }
+.strategy-paths dt { color: var(--muted); font-size: 10px; }
+.strategy-paths dd { margin: 0; font: 700 13px/1 var(--mono); text-align: right; }
+.strategy-paths p { margin: 0; color: var(--faint); font-size: 9px; line-height: 1.55; }
+.strategy-evidence { display: grid; margin-top: 14px; border-top: 1px solid var(--line); }
+.evidence-head { display: flex; justify-content: space-between; gap: 14px; padding: 12px 0 8px; }
+.evidence-head b { font-size: 11px; }
+.evidence-head span { color: var(--faint); font-size: 9px; }
+.evidence-row { display: grid; grid-template-columns: 150px 62px 1fr; gap: 10px; align-items: baseline; padding: 8px 0; border-top: 1px solid rgba(148,176,210,.07); }
+.evidence-row b, .evidence-row span { font-size: 10px; }
+.evidence-row p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
 .decision-risk-line { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; padding-top: 14px; color: var(--muted); font-size: 10px; }
 .decision-risk-line b { color: var(--text); font-family: var(--mono); }
 .decision-actions { display: flex; gap: 8px; margin-left: auto; }
@@ -1296,11 +1437,18 @@ onUnmounted(() => {
 .news-evidence b { font-size: 10px; }
 .news-evidence p { margin: 0; font-size: 10px; line-height: 1.45; }
 @media (max-width: 760px) {
+  .live-price-strip { align-items: flex-start; }
+  .live-price-strip > div:first-child { flex-wrap: wrap; gap: 7px 10px; }
+  .live-price-strip strong { font-size: 22px; }
+  .live-price-meta { display: none; }
   .outcome-ranges { grid-template-columns: 1fr; }
   .decision-heading { flex-direction: column; }
   .decision-confidence { justify-items: start; }
   .decision-plan { grid-template-columns: 1fr; }
   .decision-plan > div { border-right: 0; }
+  .strategy-paths { grid-template-columns: 1fr; }
+  .evidence-row { grid-template-columns: 1fr auto; }
+  .evidence-row p { grid-column: 1 / -1; }
   .decision-actions { width: 100%; margin-left: 0; }
   .decision-actions .el-button { flex: 1; margin-left: 0; }
 }
