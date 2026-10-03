@@ -2,6 +2,9 @@
 
 股票交易看板：记录每日盈亏、画资金曲线，并在服务端做胜率、盈亏比、最大回撤、标签和星期效应分析。
 
+> 当前功能分支相对 `main` 的新增内容、数据口径和验收结果，见
+> [FEATURES_BYRON.md](FEATURES_BYRON.md)。
+
 ## 架构
 
 - **前端**：Vue 3 + Vite + ECharts（`frontend/`）
