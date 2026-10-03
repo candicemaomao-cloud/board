@@ -118,7 +118,7 @@ def public_kline_bars(symbol: str, interval: str = "1d", limit: int = 500) -> li
     symbol = normalize_symbol(symbol)
     if not symbol:
         return []
-    allowed = {"1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w"}
+    allowed = {"1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"}
     if interval not in allowed:
         interval = "1d"
     url = (

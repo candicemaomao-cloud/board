@@ -26,6 +26,7 @@ import MacroEventStudyPage from './components/MacroEventStudyPage.vue'
 import StrategyPage from './components/StrategyPage.vue'
 import IndicatorVerifyPage from './components/IndicatorVerifyPage.vue'
 import CryptoAnalysisPage from './components/CryptoAnalysisPage.vue'
+import CryptoPatternLabPage from './components/CryptoPatternLabPage.vue'
 import CryptoNewsPage from './components/CryptoNewsPage.vue'
 import CryptoStrategyPage from './components/CryptoStrategyPage.vue'
 import CryptoStrategyBacktestPage from './components/CryptoStrategyBacktestPage.vue'
@@ -122,6 +123,7 @@ const STOCK_NAV = [
 ]
 const CRYPTO_NAV = [
   { key: 'cryptoMarket', label: '币列表', perm: 'menu.cryptoMarket' },
+  { key: 'cryptoPattern', label: '历史形态', perm: 'menu.cryptoMarket' },
   { key: 'cryptoNews', label: '新闻', perm: 'menu.cryptoNews' },
   { key: 'cryptoStrategy', label: '指标策略', perm: 'menu.cryptoStrategy' },
   { key: 'cryptoCustomStrategy', label: '自定义策略', perm: 'menu.cryptoCustomStrategy' },
@@ -967,6 +969,7 @@ onUnmounted(() => {
     <StrategyPage v-else-if="view === 'indicatorList'" />
     <IndicatorVerifyPage v-else-if="view === 'indicatorVerify'" />
     <CryptoAnalysisPage v-else-if="view === 'cryptoMarket'" />
+    <CryptoPatternLabPage v-else-if="view === 'cryptoPattern'" />
     <CryptoNewsPage v-else-if="view === 'cryptoNews'" />
     <CryptoStrategyPage
       v-else-if="view === 'cryptoStrategy'"

@@ -413,6 +413,66 @@ class CryptoCoin(Base):
     )
 
 
+class CryptoPatternStudy(Base):
+    """Saved K-line slice research for later outcome review."""
+
+    __tablename__ = "crypto_pattern_studies"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    interval: Mapped[str] = mapped_column(String(8), index=True)
+    slice_start_ts: Mapped[int] = mapped_column(Integer)
+    slice_end_ts: Mapped[int] = mapped_column(Integer, index=True)
+    horizon: Mapped[int] = mapped_column(Integer, default=3)
+    direction: Mapped[str] = mapped_column(String(16), default="震荡")
+    probability: Mapped[float] = mapped_column(Float, default=0.0)
+    composite_score: Mapped[float] = mapped_column(Float, default=0.0)
+    sample_symbols: Mapped[str] = mapped_column(Text, default="[]")
+    sample_count: Mapped[int] = mapped_column(Integer, default=0)
+    entry_price: Mapped[float] = mapped_column(Float, default=0.0)
+    payload: Mapped[str] = mapped_column(Text, default="{}")
+    status: Mapped[str] = mapped_column(String(16), default="待验证", index=True)
+    actual_return_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    success: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
+class CryptoPaperTrade(Base):
+    """Paper trade optionally associated with a saved pattern study."""
+
+    __tablename__ = "crypto_paper_trades"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True)
+    study_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("crypto_pattern_studies.id"), nullable=True)
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    interval: Mapped[str] = mapped_column(String(8))
+    trade_type: Mapped[str] = mapped_column(String(12), default="spot")
+    leverage: Mapped[float] = mapped_column(Float, default=1.0)
+    side: Mapped[str] = mapped_column(String(8), default="long")
+    quantity: Mapped[float] = mapped_column(Float, default=0.0)
+    remaining_quantity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    notional: Mapped[float] = mapped_column(Float, default=0.0)
+    entry_price: Mapped[float] = mapped_column(Float)
+    target_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    exit_after_bars: Mapped[int] = mapped_column(Integer, default=3)
+    entry_ts: Mapped[int] = mapped_column(Integer)
+    due_ts: Mapped[int] = mapped_column(Integer, index=True)
+    status: Mapped[str] = mapped_column(String(16), default="open", index=True)
+    exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pnl_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pnl_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    realized_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    fee_paid: Mapped[float] = mapped_column(Float, default=0.0)
+    exit_reason: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    opened_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class CryptoStrategy(Base):
     """虚拟币策略：指标组合 + 监听推送。"""
 

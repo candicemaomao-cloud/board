@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import json
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date as date_cls, datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import User
+from app.models import CryptoPaperTrade, CryptoPatternStudy, User
 from app.services.auth import has_perm, require_user
 from app.services.crypto_coins import (
     CryptoCoinError,
@@ -19,7 +23,8 @@ from app.services.crypto_coins import (
     to_out,
     update_coin,
 )
-from app.services.crypto_market import CryptoMarketError, klines, rankings, search_coin
+from app.services.crypto_market import CryptoMarketError, klines, rankings, search_coin, spot_price
+from app.services.crypto_pattern import close_paper_trade, due_timestamp, paper_trade_out, study_out
 from app.services.crypto_news import fetch_news
 from app.services.crypto_onchain import overview as onchain_overview
 from app.services.crypto_sentiment import fear_greed
@@ -73,6 +78,39 @@ class CoinUpdateBody(BaseModel):
     binance_symbol: str | None = None
     notes: str | None = None
     sort_order: int | None = None
+
+
+class PatternStudyBody(BaseModel):
+    symbol: str
+    interval: str
+    slice_start_ts: int
+    slice_end_ts: int
+    horizon: int = 3
+    direction: str = "震荡"
+    probability: float = 0
+    composite_score: float = 0
+    sample_symbols: list[str] = []
+    sample_count: int = 0
+    entry_price: float = 0
+    payload: dict = {}
+
+
+class PaperTradeBody(BaseModel):
+    study_id: int | None = None
+    symbol: str
+    interval: str
+    trade_type: str = "spot"
+    leverage: float = 1
+    side: str = "long"
+    notional: float = 1000
+    entry_price: float
+    target_price: float | None = None
+    exit_after_bars: int = 3
+
+
+class PaperSellBody(BaseModel):
+    quantity: float
+    price: float
 
 
 class StrategyBody(BaseModel):
@@ -217,8 +255,212 @@ def read_klines(
         "symbol": row.symbol,
         "binance_symbol": row.binance_symbol,
         "interval": interval,
+        "market": bars[0].get("market") if bars else None,
         "bars": bars,
     }
+
+
+@router.get("/pattern-samples")
+def read_pattern_samples(
+    symbols: str = Query(default="OPUSDT,BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT"),
+    interval: str = Query(default="1d"),
+    limit: int = Query(default=1500, ge=100, le=1500),
+    user: User = Depends(require_user),
+):
+    _ = user
+    allowed_intervals = {"1m", "5m", "15m", "30m", "1h", "4h", "1d", "1w", "1M"}
+    if interval not in allowed_intervals:
+        raise HTTPException(status_code=400, detail="不支持的 K 线周期")
+    requested = []
+    for value in symbols.split(","):
+        value = value.strip().upper()
+        if value and value not in requested:
+            requested.append(value)
+    requested = requested[:10]
+    items = []
+    with ThreadPoolExecutor(max_workers=min(5, len(requested) or 1)) as pool:
+        jobs = {pool.submit(klines, value, interval, limit): value for value in requested}
+        for job in as_completed(jobs):
+            value = jobs[job]
+            try:
+                rows = job.result()
+            except Exception:
+                rows = []
+            items.append({
+                "symbol": value,
+                "market": rows[0].get("market") if rows else None,
+                "bars": rows,
+            })
+    items.sort(key=lambda row: requested.index(row["symbol"]))
+    return {"interval": interval, "limit": limit, "items": items}
+
+
+@router.get("/pattern-studies")
+def list_pattern_studies(
+    db: Session = Depends(get_db), user: User = Depends(require_user)
+):
+    rows = db.scalars(select(CryptoPatternStudy).where(
+        CryptoPatternStudy.user_id == user.id
+    ).order_by(CryptoPatternStudy.id.desc()).limit(100))
+    return {"items": [study_out(row) for row in rows]}
+
+
+@router.post("/pattern-studies")
+def create_pattern_study(
+    body: PatternStudyBody, db: Session = Depends(get_db), user: User = Depends(require_user)
+):
+    row = CryptoPatternStudy(
+        user_id=user.id,
+        symbol=body.symbol.upper(),
+        interval=body.interval,
+        slice_start_ts=body.slice_start_ts,
+        slice_end_ts=body.slice_end_ts,
+        horizon=max(1, body.horizon),
+        direction=body.direction,
+        probability=body.probability,
+        composite_score=body.composite_score,
+        sample_symbols=json.dumps(body.sample_symbols, ensure_ascii=False),
+        sample_count=body.sample_count,
+        entry_price=body.entry_price,
+        payload=json.dumps(body.payload, ensure_ascii=False),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return study_out(row)
+
+
+@router.get("/paper-trades")
+def list_paper_trades(
+    db: Session = Depends(get_db), user: User = Depends(require_user)
+):
+    rows = list(db.scalars(select(CryptoPaperTrade).where(
+        CryptoPaperTrade.user_id == user.id
+    ).order_by(CryptoPaperTrade.id.desc()).limit(100)))
+    open_spot = [row for row in rows if row.trade_type != "leverage" and row.status == "open"]
+    locked_cost = sum(float(row.entry_price) * float(row.remaining_quantity if row.remaining_quantity is not None else row.quantity) for row in open_spot)
+    realized = sum(float(row.realized_pnl or 0.0) for row in rows if row.trade_type != "leverage")
+    return {
+        "items": [paper_trade_out(row) for row in rows],
+        "total_amount": float(user.total_amount or 0.0),
+        "available_usdt": max(0.0, float(user.total_amount or 0.0) - locked_cost + realized),
+    }
+
+
+@router.delete("/research-data", status_code=204)
+def reset_pattern_research_data(
+    db: Session = Depends(get_db), user: User = Depends(require_user)
+):
+    db.execute(delete(CryptoPaperTrade).where(CryptoPaperTrade.user_id == user.id))
+    db.execute(delete(CryptoPatternStudy).where(CryptoPatternStudy.user_id == user.id))
+    db.commit()
+
+
+@router.post("/paper-trades")
+def create_paper_trade(
+    body: PaperTradeBody, db: Session = Depends(get_db), user: User = Depends(require_user)
+):
+    if body.entry_price <= 0 or body.notional <= 0:
+        raise HTTPException(status_code=400, detail="模拟金额和买入价格必须大于 0")
+    trade_type = "leverage" if body.trade_type == "leverage" else "spot"
+    side = "short" if trade_type == "leverage" and body.side == "short" else "long"
+    leverage = min(125.0, max(1.0, body.leverage)) if trade_type == "leverage" else 1.0
+    if trade_type == "spot" and body.target_price is not None and body.target_price <= body.entry_price:
+        raise HTTPException(status_code=400, detail="现货自动卖出价必须高于买入价")
+    if trade_type == "leverage" and body.target_price is not None:
+        invalid_target = (side == "long" and body.target_price <= body.entry_price) or (
+            side == "short" and body.target_price >= body.entry_price
+        )
+        if invalid_target:
+            raise HTTPException(status_code=400, detail="目标平仓价方向与杠杆方向不一致")
+    if trade_type == "spot":
+        rows = list(db.scalars(select(CryptoPaperTrade).where(CryptoPaperTrade.user_id == user.id)))
+        open_spot = [row for row in rows if row.trade_type != "leverage" and row.status == "open"]
+        locked_cost = sum(float(row.entry_price) * float(row.remaining_quantity if row.remaining_quantity is not None else row.quantity) for row in open_spot)
+        realized = sum(float(row.realized_pnl or 0.0) for row in rows if row.trade_type != "leverage")
+        available = max(0.0, float(user.total_amount or 0.0) - locked_cost + realized)
+        if body.notional > available + 0.000001:
+            raise HTTPException(status_code=400, detail=f"模拟账户可用余额不足，当前可用 {available:.2f} USDT")
+    entry_fee = body.notional * 0.001 if trade_type == "spot" else 0.0
+    quantity = (body.notional - entry_fee) / body.entry_price if trade_type == "spot" else body.notional / body.entry_price
+    row = CryptoPaperTrade(
+        user_id=user.id,
+        study_id=body.study_id,
+        symbol=body.symbol.upper(),
+        interval=body.interval,
+        trade_type=trade_type,
+        leverage=leverage,
+        side=side,
+        quantity=quantity,
+        remaining_quantity=quantity,
+        notional=body.notional,
+        entry_price=body.entry_price,
+        target_price=body.target_price,
+        realized_pnl=-entry_fee,
+        fee_paid=entry_fee,
+        exit_after_bars=max(1, body.exit_after_bars),
+        entry_ts=int(time.time()),
+        due_ts=due_timestamp(body.interval, body.exit_after_bars),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return paper_trade_out(row)
+
+
+@router.post("/paper-trades/{trade_id}/sell")
+def sell_pattern_spot_position(
+    trade_id: int,
+    body: PaperSellBody,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    row = db.get(CryptoPaperTrade, trade_id)
+    if not row or row.user_id != user.id or row.trade_type != "spot":
+        raise HTTPException(status_code=404, detail="现货模拟持仓不存在")
+    if row.status != "open":
+        raise HTTPException(status_code=400, detail="该持仓已经卖出")
+    remaining = row.remaining_quantity if row.remaining_quantity is not None else row.quantity
+    requested = float(body.quantity)
+    close_tolerance = max(1e-8, remaining * 1e-6)
+    quantity = remaining if remaining - requested <= close_tolerance else min(requested, remaining)
+    if quantity <= 0 or body.price <= 0:
+        raise HTTPException(status_code=400, detail="卖出数量和价格必须大于 0")
+    fee = quantity * body.price * 0.001
+    row.realized_pnl = (row.realized_pnl or 0.0) + quantity * (body.price - row.entry_price) - fee
+    row.fee_paid = (row.fee_paid or 0.0) + fee
+    row.remaining_quantity = max(0.0, remaining - quantity)
+    row.pnl_amount = row.realized_pnl
+    row.pnl_pct = row.realized_pnl / max(0.00000001, row.notional) * 100
+    row.exit_price = body.price
+    row.exit_reason = "手动卖出" if row.remaining_quantity <= 0 else "部分卖出"
+    if row.remaining_quantity <= 0:
+        row.status = "closed"
+        row.closed_at = datetime.now().astimezone()
+    db.commit()
+    db.refresh(row)
+    return paper_trade_out(row)
+
+
+@router.post("/paper-trades/{trade_id}/close")
+def close_pattern_paper_trade(
+    trade_id: int,
+    price: float | None = Query(default=None, gt=0),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    row = db.get(CryptoPaperTrade, trade_id)
+    if not row or row.user_id != user.id:
+        raise HTTPException(status_code=404, detail="模拟交易不存在")
+    if row.status == "open":
+        try:
+            exit_price = price or spot_price(row.symbol)
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="无法取得当前现货价格") from exc
+        close_paper_trade(row, exit_price, "手动卖出")
+        db.commit()
+        db.refresh(row)
+    return paper_trade_out(row)
 
 
 @router.get("/coins/{coin_id}/tech")
