@@ -93,6 +93,14 @@ def ensure_schema() -> None:
         "ALTER TABLE daily_snapshots ADD COLUMN user_id INTEGER",
         "ALTER TABLE users ADD COLUMN live_symbols TEXT",
         "ALTER TABLE strategies ADD COLUMN user_id INTEGER",
+        "ALTER TABLE crypto_paper_trades ADD COLUMN trade_type VARCHAR(12) DEFAULT 'spot'",
+        "ALTER TABLE crypto_paper_trades ADD COLUMN leverage FLOAT DEFAULT 1.0",
+        "ALTER TABLE crypto_paper_trades ADD COLUMN target_price FLOAT",
+        "ALTER TABLE crypto_paper_trades ADD COLUMN pnl_amount FLOAT",
+        "ALTER TABLE crypto_paper_trades ADD COLUMN exit_reason VARCHAR(24)",
+        "ALTER TABLE crypto_paper_trades ADD COLUMN remaining_quantity FLOAT",
+        "ALTER TABLE crypto_paper_trades ADD COLUMN realized_pnl FLOAT DEFAULT 0.0",
+        "ALTER TABLE crypto_paper_trades ADD COLUMN fee_paid FLOAT DEFAULT 0.0",
     ]
     with engine.begin() as conn:
         try:
@@ -147,6 +155,14 @@ def ensure_schema() -> None:
                 conn.execute(text(stmt))
             except Exception:
                 pass
+        try:
+            # Older short paper trades came from the derivatives flow and must not become spot trades.
+            conn.execute(text(
+                "UPDATE crypto_paper_trades SET trade_type = 'leverage' "
+                "WHERE side = 'short' AND (trade_type IS NULL OR trade_type = 'spot')"
+            ))
+        except Exception:
+            pass
         try:
             # 无主指标一律清掉（不属于任何用户）
             conn.execute(text("UPDATE positions SET strategy_id = NULL WHERE strategy_id IN (SELECT id FROM strategies WHERE user_id IS NULL)"))

@@ -152,12 +152,14 @@ async def _shape_prewarm_worker() -> None:
 async def _crypto_strategy_worker() -> None:
     from app.services.crypto_strategies import tick_due_crypto_strategies
     from app.services.crypto_custom_strategies import tick_due_custom_strategies
+    from app.services.crypto_pattern import tick_pattern_paper_trades
 
     await asyncio.sleep(10)
     while True:
         try:
             await asyncio.to_thread(tick_due_crypto_strategies)
             await asyncio.to_thread(tick_due_custom_strategies)
+            await asyncio.to_thread(tick_pattern_paper_trades)
         except asyncio.CancelledError:
             raise
         except Exception:

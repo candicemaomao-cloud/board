@@ -12,6 +12,13 @@ from app.services.binance import BinanceError, normalize_symbol, public_kline_ba
 CG_BASE = "https://api.coingecko.com/api/v3"
 BN_FUTURES = "https://fapi.binance.com"
 BN_SPOT = "https://api.binance.com"
+BN_SPOT_BASES = (
+    BN_SPOT,
+    "https://api1.binance.com",
+    "https://api2.binance.com",
+    "https://api3.binance.com",
+    "https://data-api.binance.vision",
+)
 HEADERS = {"User-Agent": "PnlBoard/1.0", "Accept": "application/json"}
 
 DEFAULT_COINS = [
@@ -374,32 +381,54 @@ def klines(binance_symbol: str | None, interval: str = "1d", limit: int = 90) ->
     symbol = normalize_symbol(binance_symbol or "")
     if not symbol:
         raise CryptoMarketError("缺少交易对")
-    bars = public_kline_bars(symbol, interval=interval, limit=limit)
-    if not bars:
-        # spot 回退
+    # Pattern analysis is compared with the Binance spot chart. Do not prefer
+    # futures candles because their OHLC values can differ at the same time.
+    data = []
+    for base in BN_SPOT_BASES:
         url = (
-            f"{BN_SPOT}/api/v3/klines?symbol={symbol}"
+            f"{base}/api/v3/klines?symbol={symbol}"
             f"&interval={interval}&limit={max(20, min(int(limit), 1000))}"
         )
         try:
             data = _http_get(url, timeout=12.0)
         except (CryptoMarketError, httpx.HTTPError):
             data = []
-        if isinstance(data, list):
-            bars = []
-            for row in data:
-                if not isinstance(row, list) or len(row) < 6 or row[4] is None:
-                    continue
-                bars.append(
-                    {
-                        "ts": int(row[0] // 1000),
-                        "open": float(row[1]),
-                        "high": float(row[2]),
-                        "low": float(row[3]),
-                        "close": float(row[4]),
-                        "volume": float(row[5] or 0),
-                    }
-                )
+        if isinstance(data, list) and data:
+            break
+    bars = []
+    if isinstance(data, list):
+        now_ms = int(time.time() * 1000)
+        for row in data:
+            if not isinstance(row, list) or len(row) < 7 or row[4] is None:
+                continue
+            bars.append(
+                {
+                    "ts": int(row[0] // 1000),
+                    "close_ts": int(row[6] // 1000),
+                    "closed": now_ms > int(row[6]),
+                    "open": float(row[1]),
+                    "high": float(row[2]),
+                    "low": float(row[3]),
+                    "close": float(row[4]),
+                    "volume": float(row[5] or 0),
+                    "market": "spot",
+                }
+            )
     if not bars:
-        raise CryptoMarketError(f"拉不到 {symbol} 的 K 线")
+        raise CryptoMarketError(f"拉不到 {symbol} 的 Binance 现货 K 线")
     return bars
+
+
+def spot_price(binance_symbol: str | None) -> float:
+    symbol = normalize_symbol(binance_symbol or "")
+    if not symbol:
+        raise CryptoMarketError("缺少交易对")
+    for base in BN_SPOT_BASES:
+        try:
+            data = _http_get(f"{base}/api/v3/ticker/price?symbol={symbol}", timeout=8.0)
+            price = float(data.get("price") or 0) if isinstance(data, dict) else 0
+        except (CryptoMarketError, httpx.HTTPError):
+            price = 0
+        if price > 0:
+            return price
+    raise CryptoMarketError(f"拉不到 {symbol} 的 Binance 现货价格")
