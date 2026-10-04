@@ -11,7 +11,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import CryptoPaperTrade, CryptoPatternStudy, User
+from app.models import CryptoPaperTrade, CryptoPatternStudy, CryptoStrategySignal, User
 from app.services.auth import has_perm, require_user
 from app.services.crypto_coins import (
     CryptoCoinError,
@@ -40,6 +40,7 @@ from app.services.crypto_strategies import (
     to_out as strategy_out,
     update_strategy,
 )
+from app.services.crypto_strategy_records import review_signal, signal_out, summary as signal_summary
 from app.services.crypto_custom_strategies import (
     CryptoCustomStrategyError,
     catalog as custom_catalog,
@@ -525,6 +526,57 @@ def read_news(limit: int = Query(default=40, ge=10, le=80), user: User = Depends
 @router.get("/strategies")
 def read_strategies(db: Session = Depends(get_db), user: User = Depends(require_user)):
     return {"items": [strategy_out(r) for r in list_strategies(db, user.id)]}
+
+
+@router.get("/strategies/signals/summary")
+def read_strategy_signal_summary(db: Session = Depends(get_db), user: User = Depends(require_user)):
+    return signal_summary(db, user.id)
+
+
+@router.get("/strategies/signals")
+def read_strategy_signals(
+    status: str | None = None,
+    symbol: str | None = None,
+    month: str | None = None,
+    limit: int = Query(default=100, ge=1, le=500),
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    stmt = select(CryptoStrategySignal).where(CryptoStrategySignal.user_id == user.id)
+    if status:
+        stmt = stmt.where(CryptoStrategySignal.review_status == status)
+    if symbol:
+        stmt = stmt.where(CryptoStrategySignal.symbol == symbol.strip().upper())
+    if month:
+        try:
+            month_start = datetime.strptime(f"{month}-01", "%Y-%m-%d")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="月份格式应为 YYYY-MM") from exc
+        stmt = stmt.where(CryptoStrategySignal.created_at >= month_start)
+    rows = list(db.scalars(stmt.order_by(CryptoStrategySignal.id.desc()).limit(limit)))
+    return {"items": [signal_out(row) for row in rows]}
+
+
+@router.post("/strategies/signals/{signal_id}/review")
+def run_strategy_signal_review(
+    signal_id: int,
+    db: Session = Depends(get_db),
+    user: User = Depends(require_user),
+):
+    row = db.scalar(select(CryptoStrategySignal).where(
+        CryptoStrategySignal.id == signal_id,
+        CryptoStrategySignal.user_id == user.id,
+    ))
+    if not row:
+        raise HTTPException(status_code=404, detail="命中记录不存在")
+    if row.review_status == "not_evaluable":
+        raise HTTPException(status_code=400, detail="该记录属于监控预警，不进入成功率复核")
+    if row.review_due_at and row.review_due_at.replace(tzinfo=None) > datetime.utcnow():
+        raise HTTPException(status_code=400, detail="尚未到达三天复核时间")
+    try:
+        return signal_out(review_signal(db, row))
+    except CryptoMarketError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/strategies")

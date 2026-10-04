@@ -20,6 +20,12 @@ const probabilityEl = ref(null)
 const bars = ref([])
 const coinRows = ref([])
 const matches = ref([])
+const multiWindowResults = ref([])
+const windowLengths = ref({ short: 7, medium: 14, long: 30 })
+const refreshMode = ref('monitor')
+const scheduledRefreshMinutes = ref(15)
+const lastMonitorSignal = ref('')
+const strategyLastRefreshedAt = ref(null)
 const rawCandidates = ref(0)
 const chartZoom = ref([76, 100])
 const samplePools = ref([])
@@ -47,12 +53,19 @@ const orderSubmitting = ref(false)
 const closingTradeId = ref(null)
 const marketTransport = ref('NAS 后端')
 const newsAnalysis = ref(null)
+const livePrice = ref(0)
+const livePriceChange = ref(null)
+const livePriceUpdatedAt = ref(null)
+const livePriceSource = ref('Binance')
 
 const SAMPLE_SYMBOLS = ['OPUSDT', 'BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT']
 const BINANCE_SPOT_URLS = ['https://api.binance.com', 'https://data-api.binance.vision']
 
 let priceChart = null
 let probabilityChart = null
+let livePriceTimer = null
+let strategyRefreshTimer = null
+let monitorPollTimer = null
 
 const symbols = computed(() => coinRows.value.map((row) => row.binance_symbol || `${row.symbol}USDT`))
 const intervals = [
@@ -66,7 +79,13 @@ const intervals = [
 ]
 const intervalLabel = computed(() => intervals.find((x) => x.value === interval.value)?.label || interval.value)
 const horizonLabel = computed(() => `${horizon.value} 根 = ${horizon.value} × ${intervalLabel.value}`)
+const configuredWindows = computed(() => [
+  { key: 'short', label: '短线', bars: Number(windowLengths.value.short || 7), weight: 0.25 },
+  { key: 'medium', label: '中期', bars: Number(windowLengths.value.medium || 14), weight: 0.35 },
+  { key: 'long', label: '长线', bars: Number(windowLengths.value.long || 30), weight: 0.4 },
+])
 const paperEntryPrice = computed(() => Number(bars.value.at(-1)?.close || 0))
+const currentMarketPrice = computed(() => Number(livePrice.value || paperEntryPrice.value || 0))
 const spotQuantity = computed(() => spotInputMode.value === 'quantity'
   ? Number(spotQuantityInput.value || 0)
   : paperEntryPrice.value > 0 ? Number(paperNotional.value) / paperEntryPrice.value : 0)
@@ -92,6 +111,15 @@ const sampleCount = computed(() => matches.value.length)
 const upProbability = computed(() => sampleCount.value ? (matches.value.filter((x) => x.outcome > 1).length / sampleCount.value * 100).toFixed(1) : '—')
 const flatProbability = computed(() => sampleCount.value ? (matches.value.filter((x) => Math.abs(x.outcome) <= 1).length / sampleCount.value * 100).toFixed(1) : '—')
 const downProbability = computed(() => sampleCount.value ? (matches.value.filter((x) => x.outcome < -1).length / sampleCount.value * 100).toFixed(1) : '—')
+const windowConsensus = computed(() => {
+  const rows = multiWindowResults.value
+  if (!rows.length) return { direction: '暂无', agreement: 0, score: 50, ready: false }
+  const counts = rows.reduce((out, row) => ({ ...out, [row.direction]: (out[row.direction] || 0) + 1 }), {})
+  const direction = Object.entries(counts).sort((a, b) => b[1] - a[1])[0]?.[0] || '暂无'
+  const agreement = counts[direction] || 0
+  const weightedScore = rows.reduce((sum, row) => sum + row.score * row.weight, 0) / rows.reduce((sum, row) => sum + row.weight, 0)
+  return { direction, agreement, score: Math.round(weightedScore), ready: agreement >= 2 && rows.every((row) => row.samples >= 8) }
+})
 const weightedNews = computed(() => {
   const items = newsAnalysis.value?.items || []
   const now = Date.now() / 1000
@@ -157,8 +185,9 @@ const factorBreakdown = computed(() => {
   const riskScore = clampScore(50 + Math.tanh((lowerTail + upperTail) / 10) * 20 + (up - down) * 0.18)
 
   return [
-    { key: 'history', label: '历史概率', weight: 40, score: historyScore, detail: `${sampleCount.value} 个独立案例：涨 ${up.toFixed(1)}% / 跌 ${down.toFixed(1)}%，后续中位收益 ${signed(median)}%` },
-    { key: 'structure', label: '价格结构', weight: 20, score: structureScore, detail: `当前切片涨跌 ${signed(currentReturn)}%，收盘相对近期均值 ${signed(priceVsAverage)}%` },
+    { key: 'history', label: '历史概率', weight: 30, score: historyScore, detail: `${sampleCount.value} 个独立案例：涨 ${up.toFixed(1)}% / 跌 ${down.toFixed(1)}%，后续中位收益 ${signed(median)}%` },
+    { key: 'windows', label: '多窗口共振', weight: 15, score: windowConsensus.value.score, detail: `短、中、长期中 ${windowConsensus.value.agreement}/3 个方向一致，共识为${windowConsensus.value.direction}；相关窗口不做概率相乘` },
+    { key: 'structure', label: '价格结构', weight: 15, score: structureScore, detail: `当前切片涨跌 ${signed(currentReturn)}%，收盘相对近期均值 ${signed(priceVsAverage)}%` },
     { key: 'market', label: '市场共振', weight: 15, score: marketScore, detail: `${samplePools.value.map((pool) => pool.symbol).join('、')} 同周期方向共振，承接政策、政治与风险偏好冲击` },
     { key: 'volume', label: '量价心理', weight: 10, score: volumeScore, detail: `成交量前后半段变化 ${signed((Math.exp(volumeChange) - 1) * 100)}%，反映追涨、恐慌与控盘行为` },
     { key: 'news', label: '事件新闻', weight: 10, score: weightedNews.value.score, detail: `系统分析 ${weightedNews.value.sampleSize} 条，其中重大事件 ${weightedNews.value.events} 条、偏多 ${weightedNews.value.bullish} 条、偏空 ${weightedNews.value.bearish} 条；按时效和事件等级加权` },
@@ -179,7 +208,7 @@ const outcomeRanges = computed(() => {
     const low = quantile(values, 0.25)
     const high = quantile(values, 0.75)
     const median = quantile(values, 0.5)
-    const price = paperEntryPrice.value
+    const price = currentMarketPrice.value
     return {
       count: values.length,
       low,
@@ -195,6 +224,134 @@ const outcomeRanges = computed(() => {
     down: build(matches.value.map((item) => Number(item.outcome)).filter((value) => value < -1)),
   }
 })
+const decisionSupport = computed(() => {
+  const currentPrice = currentMarketPrice.value
+  const up = outcomeRanges.value.up
+  const down = outcomeRanges.value.down
+  const samples = sampleCount.value
+  const account = Number(paperTotalAmount.value || 0)
+  const available = Number(paperAvailableUsdt.value || 0)
+  const upRate = Number(upProbability.value || 0) / 100
+  const downRate = Number(downProbability.value || 0) / 100
+  const upMedian = Number(up?.median || 0)
+  const downMedian = Number(down?.median || 0)
+  const expectedReturn = upRate * upMedian + downRate * downMedian - 0.2
+  const targetPrice = Number(up?.priceMedian || 0)
+  const stopPrice = Number(down?.priceMedian || 0)
+  const desiredRiskReward = 2
+  const maxEntryPrice = targetPrice > stopPrice
+    ? (targetPrice + desiredRiskReward * stopPrice) / (desiredRiskReward + 1)
+    : 0
+  const entryLow = maxEntryPrice > 0 ? Math.max(stopPrice, maxEntryPrice * 0.988) : 0
+  const riskPerUnit = Math.max(0, maxEntryPrice - stopPrice)
+  const rewardPerUnit = Math.max(0, targetPrice - maxEntryPrice)
+  const riskReward = riskPerUnit > 0 ? rewardPerUnit / riskPerUnit : 0
+  const maxRisk = account * 0.01
+  const riskSizedQuantity = riskPerUnit > 0 ? maxRisk / riskPerUnit : 0
+  const capitalCap = Math.min(available, account * 0.25)
+  const capitalSizedQuantity = maxEntryPrice > 0 ? capitalCap / maxEntryPrice : 0
+  const quantity = Math.max(0, Math.min(riskSizedQuantity, capitalSizedQuantity))
+  const notional = quantity * maxEntryPrice
+  const estimatedRisk = quantity * riskPerUnit
+  const estimatedProfit = quantity * rewardPerUnit
+  const breakEvenProbability = riskReward > 0 ? 100 / (1 + riskReward) : 100
+  const confidence = samples >= 50 ? '高' : samples >= 30 ? '中' : '低'
+  const priceReady = currentPrice > 0 && maxEntryPrice > 0 && currentPrice <= maxEntryPrice
+  const directionReady = compositeDirection.value === '看涨' && Number(compositeScore.value) >= 55 && windowConsensus.value.ready && windowConsensus.value.direction === '看涨'
+  const sampleReady = samples >= 20
+  const valueReady = expectedReturn > 0 && riskReward >= 1.5 && Number(upProbability.value) > breakEvenProbability
+
+  let verdict = '观察'
+  let reason = '等待完成历史匹配后再生成资金计划。'
+  let allocation = 0
+  if (!samples || !up || !down) reason = '上涨或下跌案例不足，暂时不能形成完整的价格计划。'
+  else if (!sampleReady) reason = `只有 ${samples} 个独立案例，低于 20 个最低门槛，不建议用本金试单。`
+  else if (!windowConsensus.value.ready) reason = `短中长窗口尚未形成有效共振（${windowConsensus.value.agreement}/3 同向），继续观察。`
+  else if (!directionReady) reason = `综合方向为${compositeDirection.value}，多窗口共识为${windowConsensus.value.direction}，尚未形成现货看涨条件。`
+  else if (!valueReady) reason = `扣除约 0.2% 双边费用后的历史期望为 ${signed(expectedReturn)}%，收益风险条件不合格。`
+  else if (!priceReady) reason = `当前价 ${displayPrice(currentPrice)} 高于计划买入上限 ${displayPrice(maxEntryPrice)}，等待回落后重新匹配。`
+  else if (samples >= 30 && Number(compositeScore.value) >= 60) {
+    verdict = '可以执行'
+    reason = '样本、方向、价格和收益风险条件同时通过；仍应按止损控制单笔风险。'
+    allocation = notional
+  } else {
+    verdict = '小仓试单'
+    reason = '基本条件通过，但样本或综合置信度仍有限，只建议使用风险预算内的小仓位。'
+    allocation = notional * 0.5
+  }
+
+  const allocationScale = allocation / Math.max(notional, 0.00000001)
+  return {
+    verdict,
+    reason,
+    confidence,
+    entryLow,
+    entryHigh: maxEntryPrice,
+    targetPrice,
+    stopPrice,
+    expectedReturn,
+    riskReward,
+    breakEvenProbability,
+    maxRisk,
+    quantity: maxEntryPrice > 0 ? allocation / maxEntryPrice : 0,
+    notional: allocation,
+    estimatedRisk: allocation ? estimatedRisk * allocationScale : 0,
+    estimatedProfit: allocation ? estimatedProfit * allocationScale : 0,
+    actionable: allocation > 0,
+  }
+})
+const strategyPlans = computed(() => {
+  const price = currentMarketPrice.value
+  const up = outcomeRanges.value.up
+  const down = outcomeRanges.value.down
+  if (!price || !up || !down) return null
+
+  const recent = bars.value.slice(-15)
+  const recentHigh = Math.max(...recent.map((row) => Number(row.high || 0)))
+  const averageRangePct = mean(recent.map((row) => Number(row.open) > 0
+    ? (Number(row.high) - Number(row.low)) / Number(row.open) * 100
+    : 0).filter(Number.isFinite)) || 1
+  const bufferPct = Math.min(1.5, Math.max(0.15, averageRangePct * 0.15))
+  const dipEntryLow = Math.min(down.priceLow, down.priceMedian)
+  const dipEntryHigh = Math.max(down.priceLow, down.priceMedian)
+  const reboundPct = Math.min(5, Math.max(1, Math.abs(Number(down.median)) * 0.35))
+  const dipTarget = Math.min(price, down.priceMedian * (1 + reboundPct / 100))
+  const dipStop = down.priceLow * (1 - bufferPct / 100)
+  const breakoutEntry = Math.max(price, recentHigh) * (1 + bufferPct / 100)
+  const momentumTarget = Math.max(up.priceMedian, breakoutEntry * (1 + Math.max(1, Number(up.median)) / 100))
+  const momentumStop = Math.min(price, breakoutEntry * (1 - Math.max(1, averageRangePct) / 100))
+  const downDominant = Number(downProbability.value) > Number(upProbability.value)
+  const bullishReady = compositeDirection.value === '看涨' && Number(compositeScore.value) >= 60 && !downDominant
+
+  return {
+    headline: downDominant ? '等待回撤，不追涨' : bullishReady ? '等待突破确认后小仓跟随' : '保持观察，等待方向确认',
+    summary: downDominant
+      ? `历史样本中看跌 ${downProbability.value}% 高于看涨 ${upProbability.value}%，先等价格进入回撤区并出现止跌 K 线，再考虑现货买入。`
+      : bullishReady
+        ? `综合指数与历史概率偏多，但必须突破近期高点并站稳，避免在假突破中追高。`
+        : `当前因子尚未形成一致方向，不建议只凭单一概率或新闻下单。`,
+    dip: {
+      entryLow: dipEntryLow,
+      entryHigh: dipEntryHigh,
+      target: dipTarget,
+      stop: dipStop,
+      trigger: `进入区间后，等待 1 根 ${intervalLabel.value} K 线收盘转强或成交量止跌`,
+    },
+    momentum: {
+      entry: breakoutEntry,
+      target: momentumTarget,
+      stop: momentumStop,
+      trigger: `价格突破近 15 根高点并收盘站稳，且综合指数仍不低于 60%`,
+    },
+  }
+})
+const strategyEvidence = computed(() => [
+  { source: 'Binance 现货 OHLCV', status: '已接入', result: `${symbol.value} 实时价与 ${intervalLabel.value} K 线、成交量；历史匹配只使用已收盘 K 线。` },
+  { source: '跨币种历史样本', status: '已接入', result: `${samplePools.value.map((pool) => pool.symbol).join('、') || '加载中'}，共 ${sampleBarCount.value.toLocaleString()} 根。` },
+  { source: '技术与量价', status: '已接入', result: '价格结构、成交量变化、波动区间与尾部风险已进入综合指数。' },
+  { source: '事件新闻', status: weightedNews.value.sampleSize ? '已接入' : '暂无数据', result: `系统已分析 ${weightedNews.value.sampleSize} 条新闻，按方向、时效和事件等级加权。` },
+  { source: '纳指 / 原油 / 利率 / 日元', status: '待接入', result: '采纳为宏观过滤器思路；当前没有专门实时行情，不参与本次分数，避免伪造结论。' },
+])
 const visibleBarCount = computed(() => {
   if (!bars.value.length) return 0
   return Math.max(1, Math.round(bars.value.length * (chartZoom.value[1] - chartZoom.value[0]) / 100))
@@ -260,6 +417,34 @@ async function fetchSpotBars(targetSymbol, targetInterval, limit) {
     }
   }
   throw lastError || new Error(`拉不到 ${targetSymbol} 的 Binance 现货 K 线`)
+}
+
+async function refreshLivePrice() {
+  let lastError = null
+  for (const base of BINANCE_SPOT_URLS) {
+    try {
+      const response = await fetch(`${base}/api/v3/ticker/24hr?symbol=${encodeURIComponent(symbol.value)}`)
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const ticker = await response.json()
+      livePrice.value = Number(ticker.lastPrice || 0)
+      livePriceChange.value = Number(ticker.priceChangePercent || 0)
+      livePriceUpdatedAt.value = new Date()
+      livePriceSource.value = 'Binance 实时行情'
+      return
+    } catch (error) {
+      lastError = error
+    }
+  }
+  livePrice.value = paperEntryPrice.value
+  livePriceSource.value = lastError ? '最新 K 线价格（实时接口暂不可用）' : '最新 K 线价格'
+}
+
+function restartLivePricePolling() {
+  if (livePriceTimer) window.clearInterval(livePriceTimer)
+  livePrice.value = 0
+  livePriceChange.value = null
+  refreshLivePrice()
+  livePriceTimer = window.setInterval(refreshLivePrice, 5000)
 }
 
 async function loadSpotData(coinId) {
@@ -390,6 +575,91 @@ function yieldToBrowser() {
   return new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)))
 }
 
+function matchWindow(target, targetStartTs, targetEndTs) {
+  const length = target.length
+  const candidates = []
+  for (const pool of samplePools.value) {
+    for (let i = 0; i + length + horizon.value <= pool.bars.length; i += 1) {
+      const segment = pool.bars.slice(i, i + length)
+      const overlapsCurrent = pool.symbol === symbol.value
+        && Number(segment[0]?.ts) <= targetEndTs
+        && Number(segment.at(-1)?.ts) >= targetStartTs
+      if (overlapsCurrent) continue
+      const exact = exactEqual(target, segment)
+      if (mode.value === 'strict' && !exact) continue
+      candidates.push({ i, score: exact ? 100 : similarityScore(target, segment), segment, pool })
+    }
+  }
+  candidates.sort((a, b) => b.score - a.score)
+  const kept = []
+  for (const row of candidates) {
+    if (kept.some((item) => item.symbol === row.pool.symbol && Math.abs(item.i - row.i) < Math.max(1, Math.floor(length / 2)))) continue
+    const future = row.pool.bars.slice(row.i + length, row.i + length + horizon.value)
+    const base = Number(row.segment.at(-1)?.close)
+    kept.push({ symbol: row.pool.symbol, i: row.i, outcome: (Number(future.at(-1)?.close || base) / base - 1) * 100 })
+    if (kept.length >= 12) break
+  }
+  return kept
+}
+
+async function analyzeMultiWindows() {
+  const end = selection.value[1]
+  const rows = []
+  for (const config of configuredWindows.value) {
+    const length = Math.min(Math.max(3, config.bars), end + 1)
+    const target = bars.value.slice(end - length + 1, end + 1)
+    const cases = matchWindow(target, Number(target[0]?.ts), Number(target.at(-1)?.ts))
+    const up = cases.filter((item) => item.outcome > 1).length / Math.max(1, cases.length) * 100
+    const down = cases.filter((item) => item.outcome < -1).length / Math.max(1, cases.length) * 100
+    const direction = up >= down + 8 ? '看涨' : down >= up + 8 ? '看跌' : '震荡'
+    rows.push({ key: config.key, label: config.label, bars: length, eventBars: length + horizon.value, samples: cases.length, up, down, direction, score: clampScore(50 + (up - down) * 0.5), weight: config.weight })
+    await yieldToBrowser()
+  }
+  multiWindowResults.value = rows
+}
+
+async function refreshFromMonitor() {
+  if (refreshMode.value !== 'monitor' || loading.value || !samplePools.value.length) return
+  try {
+    const data = await api.cryptoStrategies()
+    const relevant = (data.items || []).filter((item) => item.enabled && item.last_hit && (item.binance_symbol || `${item.symbol}USDT`) === symbol.value)
+    const signature = relevant.map((item) => `${item.id}:${item.last_asof}`).sort().join('|')
+    if (signature && signature !== lastMonitorSignal.value) {
+      lastMonitorSignal.value = signature
+      const configured = relevant[0]?.notes?.match(/\[策略参数\]\s*短线(\d+)根；中期(\d+)根；长线(\d+)根；结果(\d+)根；(?:分析周期([^；]+)；)?刷新=监控新命中。?/)
+      if (configured) {
+        windowLengths.value = { short: Number(configured[1]), medium: Number(configured[2]), long: Number(configured[3]) }
+        horizon.value = Number(configured[4])
+        if (configured[5] && intervals.some((item) => item.value === configured[5])) interval.value = configured[5]
+      }
+      await runAnalysis()
+      strategyLastRefreshedAt.value = new Date()
+      ElMessage.success('监控出现新命中，已刷新短中长策略报告')
+    }
+  } catch {
+    // Monitoring refresh is best-effort; manual matching remains available.
+  }
+}
+
+
+function restartStrategyRefresh() {
+  if (strategyRefreshTimer) window.clearInterval(strategyRefreshTimer)
+  if (monitorPollTimer) window.clearInterval(monitorPollTimer)
+  strategyRefreshTimer = null
+  monitorPollTimer = null
+  if (refreshMode.value === 'timer') {
+    strategyRefreshTimer = window.setInterval(async () => {
+      if (!loading.value && samplePools.value.length) {
+        await runAnalysis()
+        strategyLastRefreshedAt.value = new Date()
+      }
+    }, Math.max(1, Number(scheduledRefreshMinutes.value)) * 60 * 1000)
+  } else if (refreshMode.value === 'monitor') {
+    monitorPollTimer = window.setInterval(refreshFromMonitor, 60 * 1000)
+    refreshFromMonitor()
+  }
+}
+
 async function analyzeMatches() {
   const source = bars.value
   const [start, end] = selection.value
@@ -446,6 +716,9 @@ async function analyzeMatches() {
     if (kept.length >= 12) break
   }
   matches.value = kept
+  matchPhase.value = '计算短中长窗口共振'
+  matchProgress.value = 94
+  await analyzeMultiWindows()
   analysisDirty.value = false
   matchPhase.value = '生成统计结果'
   matchProgress.value = 97
@@ -474,6 +747,7 @@ async function loadMarket() {
     const viewEnd = Math.min(bars.value.length - 1, selection.value[1] + 36)
     chartZoom.value = [viewStart / Math.max(1, bars.value.length - 1) * 100, viewEnd / Math.max(1, bars.value.length - 1) * 100]
     matches.value = []
+    multiWindowResults.value = []
     analyzed.value = false
     analysisDirty.value = true
     runStatus.value = '切片已更新，请点击“开始匹配”'
@@ -660,6 +934,13 @@ async function saveCurrentStudy() {
       predicted_direction: compositeDirection.value,
       predicted_probability: compositeDirection.value === '看跌' ? Number(downProbability.value) : compositeDirection.value === '震荡' ? Number(flatProbability.value) : Number(upProbability.value),
       factor_breakdown: factorBreakdown.value,
+      multi_window_consensus: { ...windowConsensus.value, windows: multiWindowResults.value },
+      window_lengths: { ...windowLengths.value },
+      refresh_policy: {
+        mode: refreshMode.value,
+        scheduled_minutes: Number(scheduledRefreshMinutes.value),
+        last_refreshed_at: strategyLastRefreshedAt.value?.toISOString() || null,
+      },
       outcome_ranges: outcomeRanges.value,
       matched_cases: matches.value.slice(0, 12).map((item) => ({ symbol: item.sourceSymbol, date: item.date, outcome: item.outcome })),
     },
@@ -763,6 +1044,16 @@ function submitSpotOrder() {
   return sellSpotQuantity()
 }
 
+function applyDecisionToPaperTrade() {
+  if (!decisionSupport.value.actionable) return
+  spotAction.value = 'buy'
+  spotInputMode.value = 'amount'
+  paperNotional.value = Number(Math.min(decisionSupport.value.notional, paperAvailableUsdt.value).toFixed(2))
+  autoSellEnabled.value = true
+  spotSellPrice.value = roundedPrice(decisionSupport.value.targetPrice)
+  ElMessage.success('已把建议投入和止盈价填入现货模拟盘，请确认后再提交')
+}
+
 async function sellPaperTrade(item) {
   if (closingTradeId.value) return
   closingTradeId.value = item.id
@@ -788,26 +1079,41 @@ function resizeCharts() {
 
 watch(selection, () => {
   analysisDirty.value = true
+  multiWindowResults.value = []
   runStatus.value = '切片已调整，点击“开始匹配”后才会重新计算'
   paintCharts()
 }, { deep: true })
 watch(horizon, () => {
   analysisDirty.value = true
+  multiWindowResults.value = []
   runStatus.value = `结果窗口已改为 ${horizonLabel.value}，请重新匹配`
 })
 watch(paperSide, resetPaperTargets)
 watch([symbol, interval], loadMarket)
+watch(symbol, restartLivePricePolling)
 watch(mode, () => {
   analysisDirty.value = true
+  multiWindowResults.value = []
   runStatus.value = '匹配模式已改变，请重新匹配'
 })
+watch([refreshMode, scheduledRefreshMinutes], restartStrategyRefresh)
+watch(windowLengths, () => {
+  multiWindowResults.value = []
+  analysisDirty.value = true
+  runStatus.value = '切片长度已修改，请重新匹配'
+}, { deep: true })
 onMounted(() => {
   loadMarket()
+  restartLivePricePolling()
   loadResearchRecords()
   loadNewsAnalysis()
+  restartStrategyRefresh()
   window.addEventListener('resize', resizeCharts)
 })
 onUnmounted(() => {
+  if (livePriceTimer) window.clearInterval(livePriceTimer)
+  if (strategyRefreshTimer) window.clearInterval(strategyRefreshTimer)
+  if (monitorPollTimer) window.clearInterval(monitorPollTimer)
   window.removeEventListener('resize', resizeCharts)
   priceChart?.dispose()
   probabilityChart?.dispose()
@@ -818,6 +1124,17 @@ onUnmounted(() => {
 
 <template>
   <div class="pattern-page">
+    <section class="live-price-strip" aria-live="polite">
+      <div>
+        <span>{{ symbol }} 实时价格</span>
+        <strong>{{ displayPrice(currentMarketPrice) }}</strong>
+        <b v-if="livePriceChange != null" :class="livePriceChange >= 0 ? 'positive' : 'negative'">{{ signed(livePriceChange) }}%</b>
+      </div>
+      <div class="live-price-meta">
+        <span>{{ livePriceSource }}</span>
+        <small>{{ livePriceUpdatedAt ? `${livePriceUpdatedAt.toLocaleTimeString('zh-CN', { hour12: false })} 更新 · 每 5 秒刷新` : '正在连接实时行情' }}</small>
+      </div>
+    </section>
     <section class="analysis-toolbar">
       <div class="field-group">
         <label>交易对</label>
@@ -898,7 +1215,32 @@ onUnmounted(() => {
           <el-radio-button :value="14">14 根</el-radio-button>
         </el-radio-group>
       </div>
-        <div class="sample-note">当前口径：{{ horizonLabel }}。先匹配当前切片，再读取每个历史事件之后 X 根真实 K 线作为结果。</div>
+      <div class="sample-note">当前口径：{{ horizonLabel }}。先匹配当前切片，再读取每个历史事件之后 X 根真实 K 线作为结果。</div>
+    </section>
+
+    <section v-if="multiWindowResults.length" class="window-consensus">
+      <div class="consensus-title">
+        <div><span class="workflow-step">3</span><span class="eyebrow">综合结论</span><b>{{ windowConsensus.direction }} · {{ windowConsensus.agreement }}/3 维度同向</b></div>
+        <div class="report-status">
+          <span :class="windowConsensus.ready ? 'positive' : 'neutral'">{{ windowConsensus.ready ? '通过复核门槛' : '仅观察' }}</span>
+          <small>{{ strategyLastRefreshedAt ? `${strategyLastRefreshedAt.toLocaleTimeString('zh-CN', { hour12: false })} 刷新` : '本次手动匹配' }}</small>
+        </div>
+      </div>
+      <div class="window-grid">
+        <article v-for="row in multiWindowResults" :key="row.label">
+          <div><b>{{ row.label }}</b><span>切片 {{ row.bars }} + 结果 {{ horizon }} = {{ row.eventBars }} 根</span></div>
+          <strong :class="row.direction === '看涨' ? 'positive' : row.direction === '看跌' ? 'negative' : 'neutral'">{{ row.direction }}</strong>
+          <p>上涨 {{ row.up.toFixed(1) }}% · 下跌 {{ row.down.toFixed(1) }}% · {{ row.samples }} 个独立案例</p>
+          <div class="window-meter"><i :style="{ width: `${row.up}%` }"></i></div>
+        </article>
+      </div>
+      <div class="report-summary">
+        <div><span>综合得分</span><b>{{ windowConsensus.score }}%</b><small>短 / 中 / 长按 25% / 35% / 40% 加权</small></div>
+        <div><span>策略结论</span><b>{{ strategyPlans?.headline || decisionSupport.verdict }}</b><small>{{ decisionSupport.reason }}</small></div>
+        <div><span>参考买入</span><b>{{ decisionSupport.entryHigh ? `${displayPrice(decisionSupport.entryLow)} ～ ${displayPrice(decisionSupport.entryHigh)}` : '等待有效区间' }}</b><small>触价后必须重新匹配</small></div>
+        <div><span>止盈 / 止损</span><b>{{ decisionSupport.targetPrice ? `${displayPrice(decisionSupport.targetPrice)} / ${displayPrice(decisionSupport.stopPrice)}` : '—' }}</b><small>来自同批历史案例结果分位</small></div>
+      </div>
+      <p class="consensus-note">三个切片都结束于同一当前时点，但长度独立；它们是相关证据，概率不会相乘。至少 2 个维度同向且每个维度不少于 8 个案例才通过复核门槛，最终仍由保存后的真实走势复盘校准。</p>
     </section>
 
       <div v-if="analyzed && !sampleCount" class="empty-result">
@@ -947,6 +1289,52 @@ onUnmounted(() => {
               <p v-else>当前没有足够的看跌案例可计算区间</p>
             </article>
           </div>
+          <section class="decision-support" aria-labelledby="decision-support-title">
+            <div class="decision-heading">
+              <div>
+                <span class="eyebrow">综合策略结论</span>
+                <h3 id="decision-support-title">{{ strategyPlans?.headline || decisionSupport.verdict }}</h3>
+                <p>{{ strategyPlans?.summary || decisionSupport.reason }}</p>
+              </div>
+              <div class="decision-confidence"><span>置信度</span><b>{{ decisionSupport.confidence }}</b><small>{{ sampleCount }} 个独立案例</small></div>
+            </div>
+            <div v-if="strategyPlans" class="strategy-paths">
+              <article>
+                <div><span>方案 A</span><b>回撤后买入</b></div>
+                <dl><dt>观察买入区</dt><dd>{{ displayPrice(strategyPlans.dip.entryLow) }} ～ {{ displayPrice(strategyPlans.dip.entryHigh) }}</dd><dt>短线卖出参考</dt><dd class="positive">{{ displayPrice(strategyPlans.dip.target) }}</dd><dt>失效 / 止损</dt><dd class="negative">{{ displayPrice(strategyPlans.dip.stop) }}</dd></dl>
+                <p>{{ strategyPlans.dip.trigger }}</p>
+              </article>
+              <article>
+                <div><span>方案 B</span><b>上涨突破跟随</b></div>
+                <dl><dt>突破买入参考</dt><dd>{{ displayPrice(strategyPlans.momentum.entry) }}</dd><dt>止盈参考</dt><dd class="positive">{{ displayPrice(strategyPlans.momentum.target) }}</dd><dt>失效 / 止损</dt><dd class="negative">{{ displayPrice(strategyPlans.momentum.stop) }}</dd></dl>
+                <p>{{ strategyPlans.momentum.trigger }}</p>
+              </article>
+            </div>
+            <div class="decision-plan">
+              <div><span>参考买入区间</span><b>{{ decisionSupport.entryHigh ? `${displayPrice(decisionSupport.entryLow)} ～ ${displayPrice(decisionSupport.entryHigh)}` : '—' }}</b><small>达到价格后应重新匹配确认</small></div>
+              <div><span>参考止盈</span><b class="positive">{{ decisionSupport.targetPrice ? displayPrice(decisionSupport.targetPrice) : '—' }}</b><small>看涨案例后续中位价格</small></div>
+              <div><span>参考止损</span><b class="negative">{{ decisionSupport.stopPrice ? displayPrice(decisionSupport.stopPrice) : '—' }}</b><small>看跌案例后续中位价格</small></div>
+              <div><span>建议投入</span><b>{{ decisionSupport.actionable ? `${decisionSupport.notional.toFixed(2)} USDT` : '0 USDT' }}</b><small>账户 {{ paperTotalAmount.toFixed(2) }} USDT · 单笔风险上限 1%</small></div>
+              <div><span>理论期望</span><b :class="decisionSupport.expectedReturn > 0 ? 'positive' : 'negative'">{{ signed(decisionSupport.expectedReturn) }}%</b><small>按历史上涨/下跌中位数，已扣约 0.2% 双边费用</small></div>
+              <div><span>收益风险比</span><b>{{ decisionSupport.riskReward ? `${decisionSupport.riskReward.toFixed(2)} : 1` : '—' }}</b><small>保本所需胜率约 {{ decisionSupport.breakEvenProbability.toFixed(1) }}%</small></div>
+            </div>
+            <div class="strategy-evidence">
+              <div class="evidence-head"><b>信息来源与本次分析</b><span>只有“已接入”的数据参与综合指数</span></div>
+              <div v-for="item in strategyEvidence" :key="item.source" class="evidence-row">
+                <b>{{ item.source }}</b><span :class="item.status === '已接入' ? 'positive' : item.status === '待接入' ? 'neutral' : ''">{{ item.status }}</span><p>{{ item.result }}</p>
+              </div>
+            </div>
+            <div class="decision-risk-line">
+              <span>最大风险 <b>{{ decisionSupport.actionable ? decisionSupport.estimatedRisk.toFixed(2) : decisionSupport.maxRisk.toFixed(2) }} USDT</b></span>
+              <span>目标利润 <b class="positive">{{ decisionSupport.actionable ? decisionSupport.estimatedProfit.toFixed(2) : '—' }} USDT</b></span>
+              <span>建议数量 <b>{{ decisionSupport.actionable ? decisionSupport.quantity.toFixed(6) : '0.000000' }} {{ symbol.replace('USDT', '') }}</b></span>
+              <div class="decision-actions">
+                <el-button :disabled="!decisionSupport.actionable" @click="applyDecisionToPaperTrade">按建议填入模拟盘</el-button>
+                <el-button :loading="studySaving" :disabled="!sampleCount || studySaving" @click="saveCurrentStudy">保存本次决策</el-button>
+              </div>
+            </div>
+            <p class="decision-disclaimer">方案价格来自当前历史样本的分位区间和近期波动规则，不是收益保证。任何价格触发后都必须重新匹配；样本不足 20 个时仅提供观察位，不建议投入本金。</p>
+          </section>
           <p class="range-method">区间只统计同一批匹配案例在后续 {{ horizonLabel }} 的真实收盘结果；排除最高和最低的极端 25%，不是止盈或止损保证。</p>
         </section>
 
@@ -1074,8 +1462,40 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-.pattern-page { display: flex; flex-direction: column; gap: 14px; }
+.pattern-page { display: flex; flex-direction: column; gap: 14px; width: 100%; min-width: 0; overflow: visible; }
+.live-price-strip { position: sticky; top: 0; z-index: 30; display: flex; align-items: center; justify-content: space-between; gap: 18px; min-height: 62px; padding: 10px 16px; border: 1px solid rgba(122,162,255,.42); background: rgba(8,13,20,.96); box-shadow: 0 8px 22px rgba(0,0,0,.28); backdrop-filter: blur(12px); }
+.live-price-strip > div:first-child { display: flex; align-items: baseline; gap: 12px; min-width: 0; }
+.live-price-strip span { color: var(--muted); font-size: 11px; }
+.live-price-strip strong { color: var(--text); font: 700 28px/1 var(--mono); white-space: nowrap; }
+.live-price-strip b { font: 700 14px/1 var(--mono); white-space: nowrap; }
+.live-price-meta { display: grid; justify-items: end; gap: 4px; text-align: right; }
+.live-price-meta small { color: var(--faint); font-size: 9px; }
 .analysis-toolbar, .settings-band, .score-strip { display: flex; align-items: center; gap: 18px; border: 1px solid var(--line); background: var(--bg-elev); padding: 14px 16px; border-radius: 8px; }
+.workflow-panel { display: grid; gap: 16px; padding: 16px 18px; border: 1px solid var(--line); background: var(--bg-elev); border-radius: 8px; }
+.workflow-heading { display: flex; align-items: center; gap: 12px; }
+.workflow-heading h2 { margin: 0; font-size: 16px; letter-spacing: 0; }
+.workflow-heading p { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
+.workflow-step { display: inline-grid; place-items: center; flex: 0 0 26px; width: 26px; height: 26px; border: 1px solid var(--accent); color: var(--accent); font: 700 12px/1 var(--mono); }
+.recommended-badge { margin-left: auto; padding: 5px 8px; border: 1px solid rgba(59,211,154,.35); color: var(--up); font-size: 10px; }
+.strategy-controls { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; padding-top: 14px; border-top: 1px solid var(--line); }
+.strategy-controls .horizon-settings { display: flex; align-items: center; gap: 9px; }
+.stage-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.stage-grid > label { display: grid; grid-template-columns: minmax(90px, 1fr) 96px; gap: 8px 12px; align-items: center; padding: 12px; border: 1px solid var(--line); background: #0a0f16; }
+.stage-grid label > span { display: grid; gap: 3px; }
+.stage-grid small, .stage-grid em { color: var(--faint); font-size: 9px; font-style: normal; }
+.stage-grid em { grid-column: 1 / -1; color: var(--accent); }
+.strategy-options { display: flex; align-items: center; gap: 16px; color: var(--muted); font-size: 11px; }
+.strategy-options > span { margin-left: auto; }
+.strategy-panel .run-action { flex-direction: row; align-items: center; justify-content: flex-end; }
+.monitor-panel { border-color: rgba(59,211,154,.28); }
+.monitor-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.monitor-grid > label { display: grid; grid-template-columns: 86px minmax(0, 1fr); gap: 7px 10px; align-items: center; }
+.monitor-grid > label > span { color: var(--muted); font-size: 11px; }
+.monitor-grid > label > small { grid-column: 2; color: var(--faint); font-size: 9px; line-height: 1.45; }
+.fixed-setting { display: grid; gap: 4px; min-height: 32px; align-content: center; padding: 6px 10px; border: 1px solid var(--line); background: #0a0f16; }
+.fixed-setting b { font-size: 11px; }
+.fixed-setting small { color: var(--faint); font-size: 9px; }
+.monitor-actions { display: flex; align-items: center; justify-content: flex-end; gap: 18px; padding-top: 12px; border-top: 1px solid var(--line); }
 .field-group { display: flex; align-items: center; gap: 9px; }
 .field-group label, .setting-label { color: var(--muted); font-size: 12px; }
 .toolbar-spacer { flex: 1; }
@@ -1105,8 +1525,15 @@ onUnmounted(() => {
 .price-chart { height: 500px; width: 100%; }
 .range-control { display: grid; grid-template-columns: 72px minmax(180px, 1fr) 60px; align-items: center; gap: 16px; color: var(--muted); font-size: 12px; }
 .settings-band { justify-content: space-between; }
+.settings-band { display: grid; grid-template-columns: auto auto 1fr; gap: 14px 22px; align-items: center; }
 .settings-band > div { display: flex; align-items: center; gap: 12px; }
-.sample-note { color: var(--faint); font-size: 12px; }
+.window-settings { grid-column: 1 / -1; flex-wrap: wrap; padding-top: 12px; border-top: 1px solid var(--line); }
+.window-settings label { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 11px; }
+.window-settings .el-input-number { width: 94px; }
+.window-settings small { color: var(--accent); font-family: var(--mono); white-space: nowrap; }
+.refresh-settings { grid-column: 1 / 3; }
+.sample-note { grid-column: 1 / -1; color: var(--faint); font-size: 12px; line-height: 1.6; }
+.sample-note span { color: var(--muted); }
 .score-strip { display: grid; grid-template-columns: 1.2fr repeat(4, 1fr) 1.5fr; align-items: stretch; padding: 0; overflow: hidden; }
 .score-strip > div { padding: 15px 16px; border-right: 1px solid var(--line); }
 .score-strip > div:last-child { border-right: 0; }
@@ -1121,7 +1548,8 @@ onUnmounted(() => {
 .confidence small { color: var(--faint); font-size: 10px; line-height: 1.4; }
 .positive { color: var(--up); }
 .negative { color: var(--down); }
-.result-grid { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(280px, .75fr); gap: 14px; }
+.result-grid { display: grid; grid-template-columns: minmax(0, 1.75fr) minmax(280px, .75fr); gap: 14px; min-width: 0; }
+.probability-section, .breakdown-section { min-width: 0; overflow: hidden; }
 .probability-chart { height: 310px; }
 .outcome-ranges { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .range-card { position: relative; display: flex; flex-direction: column; gap: 6px; min-height: 150px; padding: 14px; border: 1px solid var(--line); background: #0a0f16; }
@@ -1136,6 +1564,40 @@ onUnmounted(() => {
 .range-card p { margin: 0; color: var(--muted); font-size: 10px; }
 .range-card small { color: var(--text); font: 11px/1.55 var(--mono); }
 .range-card em { margin-top: auto; color: var(--faint); font-size: 10px; font-style: normal; }
+.decision-support { margin-top: 14px; padding: 16px; border: 1px solid rgba(122,162,255,.3); background: rgba(122,162,255,.055); }
+.decision-heading { display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.decision-heading .eyebrow { color: var(--accent); font-size: 10px; }
+.decision-heading h3 { margin: 4px 0 0; font-size: 24px; letter-spacing: 0; }
+.decision-heading p { max-width: 650px; margin: 7px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.decision-confidence { display: grid; justify-items: end; gap: 3px; white-space: nowrap; }
+.decision-confidence span, .decision-confidence small { color: var(--faint); font-size: 10px; }
+.decision-confidence b { font: 700 19px/1.2 var(--mono); color: var(--warn); }
+.decision-plan { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.decision-plan > div { display: grid; gap: 6px; min-width: 0; padding: 14px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.decision-plan > div:nth-child(3n) { border-right: 0; }
+.decision-plan span { color: var(--muted); font-size: 10px; }
+.decision-plan b { overflow-wrap: anywhere; font: 700 16px/1.2 var(--mono); }
+.decision-plan small { color: var(--faint); font-size: 9px; line-height: 1.45; }
+.strategy-paths { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.strategy-paths article { display: grid; gap: 10px; padding: 14px; border: 1px solid var(--line); background: #0a0f16; }
+.strategy-paths article > div { display: flex; align-items: center; gap: 9px; }
+.strategy-paths article > div span { padding: 3px 6px; border: 1px solid rgba(122,162,255,.35); color: var(--accent); font-size: 9px; }
+.strategy-paths article > div b { font-size: 13px; }
+.strategy-paths dl { display: grid; grid-template-columns: 1fr auto; gap: 8px 14px; margin: 0; }
+.strategy-paths dt { color: var(--muted); font-size: 10px; }
+.strategy-paths dd { margin: 0; font: 700 13px/1 var(--mono); text-align: right; }
+.strategy-paths p { margin: 0; color: var(--faint); font-size: 9px; line-height: 1.55; }
+.strategy-evidence { display: grid; margin-top: 14px; border-top: 1px solid var(--line); }
+.evidence-head { display: flex; justify-content: space-between; gap: 14px; padding: 12px 0 8px; }
+.evidence-head b { font-size: 11px; }
+.evidence-head span { color: var(--faint); font-size: 9px; }
+.evidence-row { display: grid; grid-template-columns: 150px 62px 1fr; gap: 10px; align-items: baseline; padding: 8px 0; border-top: 1px solid rgba(148,176,210,.07); }
+.evidence-row b, .evidence-row span { font-size: 10px; }
+.evidence-row p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.decision-risk-line { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; padding-top: 14px; color: var(--muted); font-size: 10px; }
+.decision-risk-line b { color: var(--text); font-family: var(--mono); }
+.decision-actions { display: flex; gap: 8px; margin-left: auto; }
+.decision-disclaimer { margin: 12px 0 0; color: var(--faint); font-size: 9px; line-height: 1.55; }
 .range-method { margin: 10px 0 0; color: var(--faint); font-size: 10px; line-height: 1.55; }
 .index-verdict { display: flex; align-items: end; justify-content: space-between; padding: 12px 0 16px; border-bottom: 1px solid var(--line); }
 .index-verdict > div { display: flex; align-items: baseline; gap: 10px; }
@@ -1164,7 +1626,20 @@ onUnmounted(() => {
 .news-evidence b { font-size: 10px; }
 .news-evidence p { margin: 0; font-size: 10px; line-height: 1.45; }
 @media (max-width: 760px) {
+  .live-price-strip { align-items: flex-start; }
+  .live-price-strip > div:first-child { flex-wrap: wrap; gap: 7px 10px; }
+  .live-price-strip strong { font-size: 22px; }
+  .live-price-meta { display: none; }
   .outcome-ranges { grid-template-columns: 1fr; }
+  .decision-heading { flex-direction: column; }
+  .decision-confidence { justify-items: start; }
+  .decision-plan { grid-template-columns: 1fr; }
+  .decision-plan > div { border-right: 0; }
+  .strategy-paths { grid-template-columns: 1fr; }
+  .evidence-row { grid-template-columns: 1fr auto; }
+  .evidence-row p { grid-column: 1 / -1; }
+  .decision-actions { width: 100%; margin-left: 0; }
+  .decision-actions .el-button { flex: 1; margin-left: 0; }
 }
 .research-actions { display: grid; grid-template-columns: minmax(180px,.55fr) minmax(0,2.45fr); align-items: start; gap: 20px; padding: 16px 18px; border: 1px solid rgba(122,162,255,.3); background: rgba(122,162,255,.06); }
 .research-actions h2 { margin: 0; font-size: 15px; }
@@ -1226,6 +1701,23 @@ onUnmounted(() => {
 .case-axis span:last-child { text-align: right; }
 .mono { font-family: var(--mono); }
 .risk-note { margin: 0; color: var(--faint); font-size: 11px; text-align: right; }
+.window-consensus { padding: 16px 18px; border: 1px solid rgba(122,162,255,.3); background: rgba(122,162,255,.05); }
+.consensus-title, .consensus-title > div, .window-grid article > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.consensus-title > div { justify-content: flex-start; }
+.report-status { flex-direction: column; align-items: flex-end !important; }
+.report-status small { color: var(--faint); font-size: 9px; }
+.window-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 12px; }
+.window-grid article { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); background: #0a0f16; }
+.window-grid span, .window-grid p, .consensus-note { color: var(--muted); font-size: 10px; }
+.window-grid p, .consensus-note { margin: 0; line-height: 1.55; }
+.window-meter { height: 5px; background: rgba(255,103,126,.45); overflow: hidden; }
+.window-meter i { display: block; height: 100%; background: var(--up); }
+.report-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 12px; border: 1px solid var(--line); }
+.report-summary > div { display: grid; align-content: start; gap: 6px; min-width: 0; padding: 12px; border-right: 1px solid var(--line); }
+.report-summary > div:last-child { border-right: 0; }
+.report-summary span, .report-summary small { color: var(--faint); font-size: 9px; }
+.report-summary b { overflow-wrap: anywhere; font: 700 14px/1.35 var(--mono); }
+.consensus-note { margin-top: 10px; }
 @media (max-width: 1100px) {
   .analysis-toolbar { flex-wrap: wrap; }
   .toolbar-spacer { display: none; }
@@ -1252,5 +1744,16 @@ onUnmounted(() => {
   .account-lines { grid-template-columns: 1fr; }
   .history-head { display: none; }
   .history-row { grid-template-columns: 1fr 1fr; }
+  .window-grid { grid-template-columns: 1fr; }
+  .settings-band { display: flex; }
+  .window-settings, .refresh-settings, .sample-note { width: 100%; }
+  .window-settings label { width: 100%; }
+  .report-summary { grid-template-columns: 1fr; }
+  .report-summary > div { border-right: 0; border-bottom: 1px solid var(--line); }
+  .stage-grid, .monitor-grid { grid-template-columns: 1fr; }
+  .strategy-options, .monitor-actions { align-items: flex-start; flex-direction: column; }
+  .strategy-options > span { margin-left: 0; }
+  .monitor-grid > label { grid-template-columns: 1fr; }
+  .monitor-grid > label > small { grid-column: 1; }
 }
 </style>

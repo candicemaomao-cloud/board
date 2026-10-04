@@ -42,7 +42,7 @@ def bars_to_ohlc(symbol: str, timeframe: str, bars: list[dict]) -> dict:
     closes = [float(b["close"]) for b in bars]
     return {
         "symbol": symbol,
-        "source": "binance",
+        "source": bars[-1].get("market") or "binance_spot",
         "timeframe": timeframe,
         "price": closes[-1] if closes else None,
         "closes": closes,

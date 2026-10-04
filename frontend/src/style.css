@@ -16,7 +16,7 @@
   --accent-dim: rgba(122, 162, 255, 0.14);
   --warn: #f5c16c;
   --shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
-  --radius: 18px;
+  --radius: 8px;
   --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --sans: "Outfit", "PingFang SC", "Hiragino Sans GB", sans-serif;
 
@@ -102,17 +102,17 @@ button { cursor: pointer; }
   display: flex;
   min-height: 100vh;
   align-items: stretch;
-  padding-left: 212px;
+  padding-left: 228px;
 }
 .sidebar {
-  width: 212px;
+  width: 228px;
   flex-shrink: 0;
   position: fixed;
   left: 0;
   top: 0;
   z-index: 40;
   height: 100vh;
-  padding: 28px 16px;
+  padding: 26px 20px 22px;
   border-right: 1px solid var(--line);
   background: rgba(14, 19, 27, 0.92);
   backdrop-filter: blur(16px);
@@ -123,13 +123,23 @@ button { cursor: pointer; }
 .side-nav {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  margin-top: 28px;
+  gap: 2px;
+  margin-top: 24px;
   flex: 1;
 }
+.side-section-title {
+  margin: 14px 8px 5px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  color: var(--faint);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+.side-section-title:first-child { margin-top: 0; padding-top: 0; border-top: 0; }
 .side-user {
   margin-top: auto;
-  padding-top: 16px;
+  padding: 16px 4px 0;
   border-top: 1px solid var(--line);
 }
 .side-user .sub {
@@ -146,9 +156,9 @@ button { cursor: pointer; }
   border: 1px solid transparent;
   background: transparent;
   color: var(--muted);
-  border-radius: 12px;
-  padding: 10px 12px;
-  font-size: 15px;
+  border-radius: 6px;
+  padding: 9px 12px;
+  font-size: 13px;
   font-weight: 500;
   transition: 0.15s ease;
 }
@@ -1860,6 +1870,7 @@ code {
 }
 @media (max-width: 720px) {
   .shell { flex-direction: column; padding-left: 0; }
+  .page { width: 100%; max-width: 100vw; box-sizing: border-box; overflow: hidden; }
   .sidebar {
     width: 100%;
     height: auto;
@@ -1944,4 +1955,148 @@ code {
   --el-messagebox-title-color: var(--text);
   background: var(--surface);
   border: 1px solid var(--line);
+}
+
+/* Crypto workspace: one surface language, separated by tone and spacing. */
+.crypto-ui-page {
+  --crypto-surface: #0d131c;
+  --crypto-surface-soft: #111925;
+  --crypto-surface-row: #121b27;
+  --crypto-surface-row-alt: #101721;
+  --crypto-radius: 8px;
+}
+.crypto-ui-page > .topbar {
+  margin-bottom: 24px;
+  padding-inline: 4px;
+}
+.crypto-ui-page .panel,
+.crypto-ui-page .board-section,
+.crypto-ui-page .market-strip,
+.crypto-ui-page .quick-actions,
+.crypto-ui-page .selection-section,
+.crypto-ui-page .probability-section,
+.crypto-ui-page .breakdown-section,
+.crypto-ui-page .history-section,
+.crypto-ui-page .matches-section,
+.crypto-ui-page .workflow-grid,
+.crypto-ui-page .smart-default,
+.crypto-ui-page .preset-row > button,
+.crypto-ui-page .strategy-list > article {
+  background: var(--crypto-surface) !important;
+  border: 0 !important;
+  border-radius: var(--crypto-radius) !important;
+  box-shadow: none !important;
+  overflow: hidden;
+}
+.crypto-ui-page .crypto-board,
+.crypto-ui-page .pattern-page,
+.crypto-ui-page .strategy-page {
+  gap: 18px !important;
+}
+.crypto-ui-page .board-grid,
+.crypto-ui-page .preset-row,
+.crypto-ui-page .strategy-list {
+  gap: 16px !important;
+}
+.crypto-ui-page .section-head,
+.crypto-ui-page .page-intro {
+  border: 0 !important;
+}
+.crypto-ui-page .market-strip > div,
+.crypto-ui-page .strategy-summary > div,
+.crypto-ui-page .review-stats > div,
+.crypto-ui-page .funds-grid > div,
+.crypto-ui-page .result-line > div,
+.crypto-ui-page .workflow-grid > article,
+.crypto-ui-page .quick-actions > button {
+  background: var(--crypto-surface-soft);
+  border: 0 !important;
+}
+.crypto-ui-page .market-strip > div:nth-child(even),
+.crypto-ui-page .strategy-summary > div:nth-child(even),
+.crypto-ui-page .review-stats > div:nth-child(even),
+.crypto-ui-page .funds-grid > div:nth-child(even),
+.crypto-ui-page .result-line > div:nth-child(even),
+.crypto-ui-page .workflow-grid > article:nth-child(even),
+.crypto-ui-page .quick-actions > button:nth-child(even) {
+  background: #101824;
+}
+.crypto-ui-page .coin-row,
+.crypto-ui-page .strategy-rows > div,
+.crypto-ui-page .event-list > a,
+.crypto-ui-page .study-list > div,
+.crypto-ui-page .history-row,
+.crypto-ui-page .match-row,
+.crypto-ui-page .factor-row {
+  margin: 5px 8px;
+  border: 0 !important;
+  border-radius: 6px;
+  background: var(--crypto-surface-row) !important;
+}
+.crypto-ui-page .coin-row:nth-child(even),
+.crypto-ui-page .strategy-rows > div:nth-child(even),
+.crypto-ui-page .event-list > a:nth-child(even),
+.crypto-ui-page .study-list > div:nth-child(even),
+.crypto-ui-page .history-row:nth-child(even),
+.crypto-ui-page .match-row:nth-child(even),
+.crypto-ui-page .factor-row:nth-child(even) {
+  background: var(--crypto-surface-row-alt) !important;
+}
+.crypto-ui-page .result-line,
+.crypto-ui-page .strategy-summary,
+.crypto-ui-page .review-stats,
+.crypto-ui-page .news-bias,
+.crypto-ui-page .fixed-rules,
+.crypto-ui-page .section-heading {
+  border: 0 !important;
+}
+.crypto-ui-page .el-table {
+  --el-table-bg-color: transparent;
+  --el-table-tr-bg-color: transparent;
+  --el-table-header-bg-color: var(--crypto-surface-soft);
+  --el-table-row-hover-bg-color: #182333;
+  --el-table-border-color: transparent;
+  background: transparent !important;
+}
+.crypto-ui-page .el-table::before,
+.crypto-ui-page .el-table__inner-wrapper::before {
+  display: none !important;
+}
+.crypto-ui-page .el-table__body {
+  border-collapse: separate;
+  border-spacing: 0 6px;
+}
+.crypto-ui-page .el-table td.el-table__cell {
+  background: var(--crypto-surface-row) !important;
+  border: 0 !important;
+}
+.crypto-ui-page .el-table tr:nth-child(even) td.el-table__cell {
+  background: var(--crypto-surface-row-alt) !important;
+}
+.crypto-ui-page .el-table td.el-table__cell:first-child {
+  border-radius: 6px 0 0 6px;
+}
+.crypto-ui-page .el-table td.el-table__cell:last-child {
+  border-radius: 0 6px 6px 0;
+}
+.crypto-ui-page .el-table th.el-table__cell {
+  border: 0 !important;
+  background: var(--crypto-surface-soft) !important;
+}
+.crypto-ui-page .range-row {
+  margin-bottom: 16px !important;
+  padding: 10px 12px;
+  border-radius: var(--crypto-radius);
+  background: var(--crypto-surface);
+}
+.crypto-ui-page .live-price-strip {
+  border: 0 !important;
+  border-radius: var(--crypto-radius);
+  background: rgba(13, 19, 28, 0.96) !important;
+}
+.crypto-ui-page .el-dialog,
+.crypto-ui-page .stage-editor label,
+.crypto-ui-page .advanced-settings,
+.crypto-ui-page .fixed-rules > div {
+  border-radius: var(--crypto-radius) !important;
 }

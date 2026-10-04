@@ -351,12 +351,26 @@ function openEdit(row) {
   dialog.value = true
 }
 
-function pickSearch(hit) {
-  form.symbol = hit.symbol || ''
-  form.name = hit.name || ''
-  form.coingecko_id = hit.coingecko_id || ''
-  form.binance_symbol = hit.binance_symbol || ''
-  searchHits.value = []
+async function addSearchHit(hit) {
+  if (saving.value) return
+  saving.value = true
+  try {
+    await api.createCryptoCoin({
+      symbol: (hit.symbol || '').trim(),
+      name: (hit.name || '').trim() || null,
+      coingecko_id: (hit.coingecko_id || '').trim() || null,
+      binance_symbol: (hit.binance_symbol || '').trim() || null,
+      notes: null,
+    })
+    ElMessage.success(`已添加 ${hit.symbol}`)
+    dialog.value = false
+    mainTab.value = 'mine'
+    await loadCoins()
+  } catch (e) {
+    ElMessage.error(e.message || '添加失败')
+  } finally {
+    saving.value = false
+  }
 }
 
 let searchTimer
@@ -381,7 +395,7 @@ watch(searchQ, (q) => {
 
 async function save() {
   if (!form.symbol.trim()) {
-    ElMessage.warning('请填写币种代码')
+    ElMessage.warning('请先搜索并选择币种')
     return
   }
   saving.value = true
@@ -950,46 +964,35 @@ onUnmounted(() => {
     </div>
   </el-dialog>
 
-  <el-dialog v-model="dialog" :title="editingId ? '改币种' : '新增币种'" width="520px" destroy-on-close>
-    <el-form label-width="96px">
-      <el-form-item label="搜索">
-        <el-input v-model="searchQ" placeholder="BTC / ethereum…" :loading="searching" />
-        <div class="clause-list" style="margin-top: 8px" v-if="searchHits.length">
-          <button
-            v-for="hit in searchHits"
-            :key="hit.coingecko_id"
-            class="clause-chip btn-chip"
-            type="button"
-            @click="pickSearch(hit)"
-          >
-            {{ hit.symbol }} · {{ hit.name }}
-          </button>
-        </div>
-      </el-form-item>
-      <el-form-item label="代码">
-        <el-input v-model="form.symbol" placeholder="BTC" />
-      </el-form-item>
-      <el-form-item label="名称">
-        <el-input v-model="form.name" placeholder="Bitcoin" />
-      </el-form-item>
-      <el-form-item label="CoinGecko">
-        <el-input v-model="form.coingecko_id" placeholder="bitcoin" />
-      </el-form-item>
-      <el-form-item label="币安交易对">
-        <el-input v-model="form.binance_symbol" placeholder="BTCUSDT" />
-      </el-form-item>
-      <el-form-item label="备注">
-        <el-input v-model="form.notes" type="textarea" :rows="2" />
-      </el-form-item>
+  <el-dialog v-model="dialog" :title="editingId ? '编辑关注币种' : '搜索并添加币种'" width="500px" destroy-on-close>
+    <div v-if="!editingId" class="coin-add-flow">
+      <label>输入币种代码或名称</label>
+      <el-input v-model="searchQ" size="large" clearable autofocus placeholder="例如 BTC、比特币、Ethereum、OP" :loading="searching" />
+      <small>输入后点击搜索结果即可添加，无需填写代码或交易对。</small>
+      <div v-if="searching" class="coin-search-state">正在搜索可用币种…</div>
+      <div v-else-if="searchHits.length" class="coin-search-results">
+        <button v-for="hit in searchHits" :key="hit.coingecko_id" type="button" :disabled="saving" @click="addSearchHit(hit)">
+          <b>{{ hit.symbol }}</b><span>{{ hit.name }}</span><small>{{ saving ? '添加中…' : '添加' }}</small>
+        </button>
+      </div>
+      <div v-else-if="searchQ && !searching" class="coin-search-state">没有找到结果，请尝试输入币种代码或英文名称。</div>
+    </div>
+    <el-form v-else label-width="92px">
+      <el-form-item label="代码"><el-input v-model="form.symbol" /></el-form-item>
+      <el-form-item label="名称"><el-input v-model="form.name" /></el-form-item>
+      <el-form-item label="CoinGecko"><el-input v-model="form.coingecko_id" /></el-form-item>
+      <el-form-item label="现货交易对"><el-input v-model="form.binance_symbol" /></el-form-item>
+      <el-form-item label="备注"><el-input v-model="form.notes" type="textarea" :rows="2" /></el-form-item>
     </el-form>
     <template #footer>
       <el-button @click="dialog = false">取消</el-button>
-      <el-button type="primary" :loading="saving" @click="save">保存</el-button>
+      <el-button v-if="editingId" type="primary" :loading="saving" :disabled="!form.symbol" @click="save">保存修改</el-button>
     </template>
   </el-dialog>
 </template>
 
 <style scoped>
+.coin-add-flow{display:grid;gap:10px}.coin-add-flow>label{font-size:15px;font-weight:700}.coin-add-flow>small{color:var(--muted);font-size:12px;line-height:1.5}.coin-search-state{padding:12px;border-radius:8px;background:rgba(84,135,220,.08);color:var(--muted)}.coin-search-results{display:grid;max-height:260px;overflow:auto;border-radius:8px;background:rgba(84,135,220,.055)}.coin-search-results button{display:grid;grid-template-columns:70px 1fr auto;align-items:center;gap:10px;padding:12px 14px;border:0;background:transparent;color:var(--text);text-align:left;cursor:pointer}.coin-search-results button:hover{background:rgba(84,135,220,.13)}.coin-search-results b{color:var(--primary);font-size:14px}.coin-search-results span{font-size:14px}.coin-search-results small{color:var(--muted)}.coin-selected{display:flex;align-items:center;justify-content:space-between;padding:14px;border-radius:8px;background:rgba(61,220,151,.09)}.coin-selected>div{display:flex;align-items:baseline;gap:10px}.coin-selected b{color:#3ddc97;font-size:18px}.coin-selected span,.coin-selected small{color:var(--muted)}.coin-advanced{margin-top:4px;padding:11px 13px;border-radius:8px;background:rgba(84,135,220,.045)}.coin-advanced summary{color:var(--muted);cursor:pointer}.coin-advanced .el-form{margin-top:14px}.coin-advanced .el-form-item:last-child{margin-bottom:0}
 .spark {
   display: block;
 }
