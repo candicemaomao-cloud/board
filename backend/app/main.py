@@ -153,6 +153,7 @@ async def _crypto_strategy_worker() -> None:
     from app.services.crypto_strategies import tick_due_crypto_strategies
     from app.services.crypto_custom_strategies import tick_due_custom_strategies
     from app.services.crypto_pattern import tick_pattern_paper_trades
+    from app.services.crypto_strategy_records import tick_due_signal_reviews
 
     await asyncio.sleep(10)
     while True:
@@ -160,6 +161,7 @@ async def _crypto_strategy_worker() -> None:
             await asyncio.to_thread(tick_due_crypto_strategies)
             await asyncio.to_thread(tick_due_custom_strategies)
             await asyncio.to_thread(tick_pattern_paper_trades)
+            await asyncio.to_thread(tick_due_signal_reviews)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -205,7 +207,7 @@ async def lifespan(_app: FastAPI):
                 pass
 
 
-app = FastAPI(title="P&L Board API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="P&L Board API", version="1.1.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[origin.strip() for origin in app_settings.cors_origins.split(",") if origin.strip()],

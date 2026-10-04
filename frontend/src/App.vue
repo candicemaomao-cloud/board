@@ -26,9 +26,11 @@ import MacroEventStudyPage from './components/MacroEventStudyPage.vue'
 import StrategyPage from './components/StrategyPage.vue'
 import IndicatorVerifyPage from './components/IndicatorVerifyPage.vue'
 import CryptoAnalysisPage from './components/CryptoAnalysisPage.vue'
+import CryptoDashboardPage from './components/CryptoDashboardPage.vue'
 import CryptoPatternLabPage from './components/CryptoPatternLabPage.vue'
 import CryptoNewsPage from './components/CryptoNewsPage.vue'
 import CryptoStrategyPage from './components/CryptoStrategyPage.vue'
+import CryptoStrategySignalsPage from './components/CryptoStrategySignalsPage.vue'
 import CryptoStrategyBacktestPage from './components/CryptoStrategyBacktestPage.vue'
 import CryptoCustomStrategyPage from './components/CryptoCustomStrategyPage.vue'
 import CryptoCustomBacktestPage from './components/CryptoCustomBacktestPage.vue'
@@ -72,7 +74,12 @@ const NAV = [
   { key: 'macro', label: '宏观因素', perm: 'menu.macro' },
   { key: 'indicators', label: '指标', perm: 'menu.indicators' },
   { key: 'stockAnalysis', label: '股票分析', perm: 'menu.stockAnalysis' },
-  { key: 'cryptoAnalysis', label: '虚拟币分析', perm: 'menu.cryptoAnalysis' },
+  { key: 'cryptoDashboard', label: '虚拟币看板', perm: 'menu.cryptoAnalysis' },
+  { key: 'cryptoMarket', label: '币种行情', perm: 'menu.cryptoMarket' },
+  { key: 'cryptoPattern', label: '历史形态', perm: 'menu.cryptoMarket' },
+  { key: 'cryptoNews', label: '币圈新闻', perm: 'menu.cryptoNews' },
+  { key: 'cryptoStrategy', label: '指标策略', perm: 'menu.cryptoStrategy' },
+  { key: 'cryptoCustomStrategy', label: '自定义策略', perm: 'menu.cryptoCustomStrategy' },
   { key: 'strategy', label: '策略', perm: 'menu.strategy' },
   { key: 'alerts', label: '推送', perm: 'menu.alerts' },
   { key: 'users', label: '用户管理', perm: 'menu.users' },
@@ -84,7 +91,7 @@ const PLAN_NAV = [
 ]
 const PLAN_VIEWS = new Set(PLAN_NAV.map((x) => x.key))
 /** 有子菜单的父项；默认全部收起 */
-const PARENT_KEYS = ['plans', 'riskHub', 'macro', 'indicators', 'stockAnalysis', 'cryptoAnalysis', 'strategy', 'alerts']
+const PARENT_KEYS = ['plans', 'riskHub', 'macro', 'indicators', 'stockAnalysis', 'cryptoStrategy', 'strategy', 'alerts']
 const MACRO_NAV = [
   { key: 'fedRisk', label: '风险指数', perm: 'menu.macro' },
   { key: 'eventStudy', label: '宏观统计', perm: 'menu.macro' },
@@ -122,10 +129,12 @@ const STOCK_NAV = [
   { key: 'live', label: '实时播报', perm: 'menu.live', hidden: true },
 ]
 const CRYPTO_NAV = [
+  { key: 'cryptoDashboard', label: '虚拟币看板', perm: 'menu.cryptoAnalysis' },
   { key: 'cryptoMarket', label: '币列表', perm: 'menu.cryptoMarket' },
   { key: 'cryptoPattern', label: '历史形态', perm: 'menu.cryptoMarket' },
   { key: 'cryptoNews', label: '新闻', perm: 'menu.cryptoNews' },
   { key: 'cryptoStrategy', label: '指标策略', perm: 'menu.cryptoStrategy' },
+  { key: 'cryptoStrategySignals', label: '命中记录', perm: 'menu.cryptoStrategy', hidden: true },
   { key: 'cryptoCustomStrategy', label: '自定义策略', perm: 'menu.cryptoCustomStrategy' },
 ]
 const IND_VIEWS = new Set(['indicatorList', 'indicatorVerify', 'intradayStock', 'stockWatch', 'newStrategy'])
@@ -258,7 +267,7 @@ const pageTitle = computed(() => {
   }
   if (CRYPTO_VIEWS.has(view.value)) {
     if (view.value === 'cryptoCustomBacktest') return '虚拟币分析 · 自定义策略 · 回测'
-    if (view.value === 'cryptoStrategyBacktest') return '虚拟币分析 · 指标策略 · 回测'
+    if (view.value === 'cryptoStrategyBacktest') return '虚拟币分析 · 指标策略 · 历史信号回放'
     const sub = CRYPTO_NAV.find((x) => x.key === view.value)
     return sub ? `虚拟币分析 · ${sub.label}` : '虚拟币分析'
   }
@@ -270,6 +279,16 @@ const loggedIn = authState.isLoggedIn
 const currentUser = authState.user
 
 const visibleNav = computed(() => NAV.filter((item) => can(item.perm)))
+const NAV_GROUPS = [
+  { key: 'overview', label: '总览', items: ['board'] },
+  { key: 'stocks', label: '股票模块', items: ['stockAnalysis', 'macro', 'indicators', 'strategy'] },
+  { key: 'crypto', label: '虚拟币模块', items: ['cryptoDashboard', 'cryptoMarket', 'cryptoPattern', 'cryptoNews', 'cryptoStrategy', 'cryptoCustomStrategy'] },
+  { key: 'common', label: '公共模块', items: ['plans', 'positions', 'riskHub', 'alerts', 'users'] },
+]
+const groupedNav = computed(() => NAV_GROUPS.map((group) => ({
+  ...group,
+  items: group.items.map((key) => visibleNav.value.find((item) => item.key === key)).filter(Boolean),
+})).filter((group) => group.items.length))
 const visiblePlanNav = computed(() => PLAN_NAV.filter((item) => can(item.perm)))
 const visibleMacroNav = computed(() => MACRO_NAV.filter((item) => can(item.perm)))
 const visiblePushNav = computed(() => PUSH_NAV.filter((item) => can(item.perm)))
@@ -277,13 +296,17 @@ const visibleStratNav = computed(() => STRAT_NAV.filter((item) => can(item.perm)
 const visibleIndNav = computed(() => IND_NAV.filter((item) => can(item.perm)))
 const visibleStockNav = computed(() => STOCK_NAV.filter((item) => !item.hidden && can(item.perm)))
 const visibleCryptoNav = computed(() =>
-  CRYPTO_NAV.filter((item) => {
+  CRYPTO_NAV.filter((item) => !item.hidden).filter((item) => {
     if (item.key === 'cryptoCustomStrategy') {
       return can(item.perm) || can('menu.cryptoStrategy')
     }
     return can(item.perm)
   }),
 )
+const visibleCryptoStrategyNav = computed(() => [
+  { key: 'cryptoStrategy', label: '指标策略设置' },
+  { key: 'cryptoStrategySignals', label: '命中记录' },
+])
 const visibleRiskNav = computed(() =>
   RISK_NAV.map((sub) => {
     if (sub.children) {
@@ -307,6 +330,7 @@ function isParentActive(key) {
   if (key === 'strategy') return view.value === 'strategy' || view.value === 'pairs' || view.value === 'intraday'
   if (key === 'indicators') return IND_VIEWS.has(view.value)
   if (key === 'stockAnalysis') return STOCK_VIEWS.has(view.value)
+  if (key === 'cryptoStrategy') return view.value === 'cryptoStrategy' || view.value === 'cryptoStrategySignals' || view.value === 'cryptoStrategyBacktest'
   if (key === 'cryptoAnalysis') return CRYPTO_VIEWS.has(view.value)
   return view.value === key
 }
@@ -323,7 +347,7 @@ function openParent(key) {
 function firstAllowedView() {
   const order = [
     'board', 'dayPlan', 'positions', 'risk', 'macro',
-    'indicatorList', 'fundamentals', 'cryptoMarket', 'strategy', 'alerts', 'users',
+    'indicatorList', 'fundamentals', 'cryptoDashboard', 'strategy', 'alerts', 'users',
   ]
   for (const key of order) {
     if (PLAN_VIEWS.has(key)) {
@@ -380,10 +404,13 @@ function ensureViewAllowed() {
     fearVix: 'menu.fearVix',
     earningsStocks: 'menu.earningsStocks',
     stockScreener: 'menu.stockScreener',
+    cryptoDashboard: 'menu.cryptoAnalysis',
     cryptoAnalysis: 'menu.cryptoMarket',
     cryptoMarket: 'menu.cryptoMarket',
+    cryptoPattern: 'menu.cryptoMarket',
     cryptoNews: 'menu.cryptoNews',
     cryptoStrategy: 'menu.cryptoStrategy',
+    cryptoStrategySignals: 'menu.cryptoStrategy',
     cryptoStrategyBacktest: 'menu.cryptoStrategy',
     cryptoCustomStrategy: 'menu.cryptoCustomStrategy',
     cryptoCustomBacktest: 'menu.cryptoCustomStrategy',
@@ -611,6 +638,7 @@ function onParentClick(key) {
     const first = visibleStockNav.value[0]
     if (first) view.value = first.key
   }
+  else if (key === 'cryptoStrategy') view.value = 'cryptoStrategy'
   else if (key === 'cryptoAnalysis') {
     const first = visibleCryptoNav.value[0]
     if (first) view.value = first.key
@@ -791,7 +819,9 @@ onUnmounted(() => {
         <p>周线复盘 · 资金曲线 · 财富自由</p>
       </div>
       <nav class="side-nav">
-        <template v-for="item in visibleNav" :key="item.key">
+        <template v-for="group in groupedNav" :key="group.key">
+          <div class="side-section-title">{{ group.label }}</div>
+        <template v-for="item in group.items" :key="item.key">
           <button
             class="side-link"
             :class="{
@@ -884,17 +914,6 @@ onUnmounted(() => {
               {{ sub.label }}
             </button>
           </div>
-          <div v-else-if="item.key === 'cryptoAnalysis' && navOpen.cryptoAnalysis" class="side-sub">
-            <button
-              v-for="sub in visibleCryptoNav"
-              :key="sub.key"
-              class="side-link side-link-sub"
-              :class="{ active: view === sub.key }"
-              @click="openParent('cryptoAnalysis'); view = sub.key"
-            >
-              {{ sub.label }}
-            </button>
-          </div>
           <div v-else-if="item.key === 'strategy' && navOpen.strategy" class="side-sub">
             <button
               v-for="sub in visibleStratNav"
@@ -902,6 +921,17 @@ onUnmounted(() => {
               class="side-link side-link-sub"
               :class="{ active: view === sub.key }"
               @click="openParent('strategy'); view = sub.key"
+            >
+              {{ sub.label }}
+            </button>
+          </div>
+          <div v-else-if="item.key === 'cryptoStrategy' && navOpen.cryptoStrategy" class="side-sub">
+            <button
+              v-for="sub in visibleCryptoStrategyNav"
+              :key="sub.key"
+              class="side-link side-link-sub"
+              :class="{ active: view === sub.key || (sub.key === 'cryptoStrategy' && view === 'cryptoStrategyBacktest') }"
+              @click="openParent('cryptoStrategy'); view = sub.key"
             >
               {{ sub.label }}
             </button>
@@ -918,6 +948,7 @@ onUnmounted(() => {
             </button>
           </div>
         </template>
+        </template>
       </nav>
       <div class="side-user">
         <div class="sub">{{ currentUser?.username }} · {{ currentUser?.role }}</div>
@@ -927,7 +958,7 @@ onUnmounted(() => {
         <el-button size="small" style="margin-top: 8px; width: 100%" @click="logout">退出</el-button>
       </div>
     </aside>
-    <div class="page" :class="{ 'page-macro': view === 'macro' }">
+    <div class="page" :class="{ 'page-macro': view === 'macro', 'crypto-ui-page': CRYPTO_VIEWS.has(view) }">
     <header class="topbar">
       <div class="page-title">{{ pageTitle }}</div>
       <div class="top-actions" v-if="view === 'board'">
@@ -968,6 +999,7 @@ onUnmounted(() => {
     <MacroPage v-else-if="view === 'macro'" :tab="macroTab" />
     <StrategyPage v-else-if="view === 'indicatorList'" />
     <IndicatorVerifyPage v-else-if="view === 'indicatorVerify'" />
+    <CryptoDashboardPage v-else-if="view === 'cryptoDashboard'" @navigate="switchView" />
     <CryptoAnalysisPage v-else-if="view === 'cryptoMarket'" />
     <CryptoPatternLabPage v-else-if="view === 'cryptoPattern'" />
     <CryptoNewsPage v-else-if="view === 'cryptoNews'" />
@@ -975,6 +1007,7 @@ onUnmounted(() => {
       v-else-if="view === 'cryptoStrategy'"
       @open-backtest="openCryptoStrategyBacktest"
     />
+    <CryptoStrategySignalsPage v-else-if="view === 'cryptoStrategySignals'" />
     <CryptoStrategyBacktestPage
       v-else-if="view === 'cryptoStrategyBacktest'"
       :strategy-id="cryptoStrategyBtId"

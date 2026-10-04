@@ -3,6 +3,45 @@
 All notable user-facing changes are recorded here. Versions follow Semantic
 Versioning, and dates use Asia/Manila calendar dates.
 
+## [1.1.0] - 2026-10-04
+
+### Added
+
+- Crypto dashboard with market state, account capital, watched assets, strategy
+  radar, algorithm evidence, review progress, and monthly success statistics.
+- Indicator Strategy workspace with BTC, ETH, OP, and PEOPLE defaults, expert
+  monitoring presets, three independent short/medium/long pattern windows, and
+  Telegram delivery to the configured household group.
+- Immutable strategy-hit records containing the trigger snapshot, indicator
+  explanations, three-window evidence, decision levels, outcome ranges, and a
+  three-day real-market review.
+- Historical-path forecasts for maximum upside, maximum downside, final-return
+  range, likely duration, sample count, and window agreement.
+- One-field fuzzy coin search. Selecting a result now adds it immediately while
+  symbol, CoinGecko id, and spot pair are resolved automatically.
+
+### Changed
+
+- Reorganized navigation into stock, crypto, and shared modules, with direct
+  access to the crypto dashboard, coin market, patterns, news, and strategies.
+- Telegram alerts now explain each triggered indicator and include the monitor,
+  historical-pattern, risk, sample, price-range, and review context instead of
+  presenting a raw checklist as a recommendation.
+- Renamed the ambiguous dashboard state from data error to strategy calculation
+  error and expose the underlying quote, candle, indicator, pattern, or push
+  failure reason.
+
+### Reliability
+
+- Strategy probabilities are not multiplied across correlated windows. Window
+  agreement is treated as supporting evidence and remains gated by sample size,
+  price position, expected value, and risk limits.
+- New signal records are frozen at creation and later appended with observed
+  market outcomes; older records are explicitly marked when full path evidence
+  was not historically captured.
+- Added focused tests for three-window review, record persistence, review
+  outcomes, and complete Telegram strategy reports.
+
 ## [1.1.0-beta.3] - 2026-10-04
 
 ### Added

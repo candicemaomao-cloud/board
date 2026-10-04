@@ -19,11 +19,14 @@ BN_SPOT_BASES = (
     "https://api3.binance.com",
     "https://data-api.binance.vision",
 )
+BYBIT_SPOT = "https://api.bybit.com"
 HEADERS = {"User-Agent": "PnlBoard/1.0", "Accept": "application/json"}
 
 DEFAULT_COINS = [
-    {"symbol": "BTC", "name": "Bitcoin", "coingecko_id": "bitcoin", "binance_symbol": "BTCUSDT"},
-    {"symbol": "ETH", "name": "Ethereum", "coingecko_id": "ethereum", "binance_symbol": "ETHUSDT"},
+    {"symbol": "BTC", "name": "Bitcoin", "coingecko_id": "bitcoin", "binance_symbol": "BTCUSDT", "aliases": "比特币 大饼"},
+    {"symbol": "ETH", "name": "Ethereum", "coingecko_id": "ethereum", "binance_symbol": "ETHUSDT", "aliases": "以太坊"},
+    {"symbol": "OP", "name": "Optimism", "coingecko_id": "optimism", "binance_symbol": "OPUSDT", "aliases": "乐观协议"},
+    {"symbol": "PEOPLE", "name": "ConstitutionDAO", "coingecko_id": "constitutiondao", "binance_symbol": "PEOPLEUSDT", "aliases": "people 宪法 dao"},
     {"symbol": "BNB", "name": "BNB", "coingecko_id": "binancecoin", "binance_symbol": "BNBUSDT"},
     {"symbol": "SOL", "name": "Solana", "coingecko_id": "solana", "binance_symbol": "SOLUSDT"},
     {"symbol": "XRP", "name": "XRP", "coingecko_id": "ripple", "binance_symbol": "XRPUSDT"},
@@ -106,7 +109,7 @@ def search_coin(query: str) -> list[dict]:
             "binance_symbol": c.get("binance_symbol"),
         }
         for c in DEFAULT_COINS
-        if ql in c["symbol"].lower() or ql in c["name"].lower() or ql in (c.get("coingecko_id") or "")
+        if ql in c["symbol"].lower() or ql in c["name"].lower() or ql in (c.get("coingecko_id") or "") or ql in c.get("aliases", "").lower()
     ]
 
 
@@ -415,7 +418,40 @@ def klines(binance_symbol: str | None, interval: str = "1d", limit: int = 90) ->
                 }
             )
     if not bars:
-        raise CryptoMarketError(f"拉不到 {symbol} 的 Binance 现货 K 线")
+        bybit_intervals = {
+            "1m": "1", "5m": "5", "15m": "15", "30m": "30",
+            "1h": "60", "4h": "240", "1d": "D", "1w": "W", "1M": "M",
+        }
+        try:
+            fallback = _http_get(
+                f"{BYBIT_SPOT}/v5/market/kline",
+                {
+                    "category": "spot",
+                    "symbol": symbol,
+                    "interval": bybit_intervals.get(interval, "D"),
+                    "limit": max(20, min(int(limit), 1000)),
+                },
+                timeout=12.0,
+            )
+            rows = ((fallback or {}).get("result") or {}).get("list") if isinstance(fallback, dict) else []
+            for row in reversed(rows or []):
+                if not isinstance(row, list) or len(row) < 6:
+                    continue
+                bars.append({
+                    "ts": int(int(row[0]) // 1000),
+                    "close_ts": None,
+                    "closed": True,
+                    "open": float(row[1]),
+                    "high": float(row[2]),
+                    "low": float(row[3]),
+                    "close": float(row[4]),
+                    "volume": float(row[5] or 0),
+                    "market": "bybit_spot_fallback",
+                })
+        except (CryptoMarketError, httpx.HTTPError, TypeError, ValueError):
+            bars = []
+    if not bars:
+        raise CryptoMarketError(f"拉不到 {symbol} 的 Binance / Bybit 现货 K 线")
     return bars
 
 

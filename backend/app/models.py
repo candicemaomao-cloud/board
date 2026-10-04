@@ -505,6 +505,45 @@ class CryptoStrategy(Base):
     )
 
 
+class CryptoStrategySignal(Base):
+    """Frozen strategy conclusion created from one monitored candle hit."""
+
+    __tablename__ = "crypto_strategy_signals"
+    __table_args__ = (UniqueConstraint("strategy_id", "signal_asof", name="uq_crypto_signal_event"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), index=True)
+    strategy_id: Mapped[int] = mapped_column(Integer, ForeignKey("crypto_strategies.id"), index=True)
+    strategy_name: Mapped[str] = mapped_column(String(64), default="")
+    symbol: Mapped[str] = mapped_column(String(32), index=True)
+    binance_symbol: Mapped[str] = mapped_column(String(32), index=True)
+    monitor_timeframe: Mapped[str] = mapped_column(String(8), default="1h")
+    signal_asof: Mapped[str] = mapped_column(String(64), index=True)
+    entry_price: Mapped[float] = mapped_column(Float)
+    direction: Mapped[str] = mapped_column(String(16), default="观察", index=True)
+    verdict: Mapped[str] = mapped_column(String(255), default="")
+    target_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    stop_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    evidence_id: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+    hit_indicators: Mapped[str] = mapped_column(Text, default="[]")
+    evidence: Mapped[str] = mapped_column(Text, default="{}")
+    report_text: Mapped[str] = mapped_column(Text, default="")
+    review_due_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    review_status: Mapped[str] = mapped_column(String(24), default="pending", index=True)
+    review_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    actual_return_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_favorable_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    max_adverse_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    outcome: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    success: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    review_error: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, onupdate=utcnow
+    )
+
+
 class CryptoCustomStrategy(Base):
     """虚拟币自定义策略实例：算法（如导数策略）+ 币种 + 参数 + 监听推送。"""
 
